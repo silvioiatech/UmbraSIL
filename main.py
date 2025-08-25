@@ -5,6 +5,7 @@ import os
 import logging
 import asyncio
 import asyncpg
+import uvicorn
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 
@@ -32,7 +33,7 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL
 
-    # These should be in your SystemConfig class
+    # Feature flags
     ENABLE_FINANCE = os.getenv("ENABLE_FINANCE", "true").lower() == "true"
     ENABLE_BUSINESS = os.getenv("ENABLE_BUSINESS", "false").lower() == "true"  # Disabled by default
     ENABLE_MONITORING = os.getenv("ENABLE_MONITORING", "true").lower() == "true"
@@ -213,9 +214,10 @@ def require_auth(func):
         
         # Check if user is authorized
         if user_id not in Config.ALLOWED_USER_IDS:
-            await update.message.reply_text(
-                "🚫 Access denied. You are not authorized to use this bot."
-            )
+            # For callbacks, update.message can be None; route reply safely
+            target = update.effective_message
+            if target:
+                await target.reply_text("🚫 Access denied. You are not authorized to use this bot.")
             await db_manager.log_command(
                 user_id, func.__name__, "Unauthorized access attempt", False, "User not in whitelist"
             )
@@ -279,7 +281,7 @@ Currently in **Phase 1** - Core Infrastructure ✅
 Use /menu to see available options or /help for commands.
         """
         
-        await update.message.reply_text(welcome_text, parse_mode='Markdown')
+        await update.effective_message.reply_text(welcome_text, parse_mode='Markdown')
         await self.db.log_command(user.id, "start", "User started bot", True)
     
     @require_auth
@@ -307,7 +309,7 @@ Use /menu to see available options or /help for commands.
 Natural language commands will work here!
         """
         
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        await update.effective_message.reply_text(help_text, parse_mode='Markdown')
         await self.db.log_command(update.effective_user.id, "help", "Help requested", True)
     
     @require_auth
@@ -337,7 +339,7 @@ Natural language commands will work here!
 🏗️ **Environment:** Railway.app
         """
         
-        await update.message.reply_text(status_text, parse_mode='Markdown')
+        await update.effective_message.reply_text(status_text, parse_mode='Markdown')
         await self.db.log_command(update.effective_user.id, "status", "Status checked", True)
     
     @require_auth
@@ -359,7 +361,7 @@ Natural language commands will work here!
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "🎛️ **Main Menu** - Choose a category:",
             parse_mode='Markdown',
             reply_markup=reply_markup
@@ -422,27 +424,69 @@ Natural language commands will work here!
                 parse_mode='Markdown'
             )
         elif callback_data == "menu_status":
-            await self.status_command(query, context)
+            # Inline status rendering (no call to /status which expects .message)
+            try:
+                async with self.db.pool.acquire() as conn:
+                    await conn.fetchval('SELECT 1')
+                db_status = "✅ Connected"
+            except Exception as e:
+                db_status = f"❌ Error: {str(e)[:50]}..."
+            status_text = f"""
+📊 **Bot Status Report**
+
+🤖 **Bot:** ✅ Online
+💾 **Database:** {db_status}
+🔐 **Auth:** ✅ Enabled (Whitelist: {len(Config.ALLOWED_USER_IDS)} users)
+🛡️ **2FA:** {"✅ Enabled" if Config.ENABLE_2FA else "❌ Disabled"}
+
+📈 **Current Phase:** 1 - Core Infrastructure
+🚀 **Next Phase:** 2 - Finance Management
+
+⏰ **Uptime:** Just started
+🏗️ **Environment:** Railway.app
+            """
+            await query.edit_message_text(status_text, parse_mode='Markdown')
         elif callback_data == "menu_help":
-            await self.help_command(query, context)
+            help_text = """
+📚 **Available Commands:**
+
+🔧 **Core Commands:**
+/start - Welcome message
+/help - Show this help
+/status - Bot status
+/menu - Main menu
+
+💰 **Finance (Phase 2 - Coming Soon):**
+/add_expense - Add expense
+/add_income - Add income  
+/expenses_month - Monthly report
+
+⚙️ **Business (Phase 3 - Coming Soon):**
+/clients - Manage clients
+/monitor - System monitoring
+
+🧠 **AI Assistant (Phase 5 - Coming Soon):**
+Natural language commands will work here!
+            """
+            await query.edit_message_text(help_text, parse_mode='Markdown')
         
         await self.db.log_command(user_id, f"callback_{callback_data}", "Menu callback", True)
     
     @require_auth
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages (for future AI integration)"""
-        message_text = update.message.text.lower()
+        message_text = (update.message.text or "").lower()
         
         # Simple responses for Phase 1
         if any(word in message_text for word in ['hello', 'hi', 'hey']):
-            await update.message.reply_text(
+            await update.effective_message.reply_text(
                 "👋 Hello! I'm your Personal Bot Assistant.\n"
                 "Use /menu to see what I can do!"
             )
         elif any(word in message_text for word in ['status', 'health']):
             await self.status_command(update, context)
         else:
-            await update.message.reply_text(
+            await update.effective_message.reply_text(
                 "🤔 I don't understand that yet.\n"
                 "In Phase 5, I'll have AI capabilities!\n"
                 "For now, use /help or /menu."
@@ -476,10 +520,13 @@ async def root():
 @fastapi_app.get("/health")
 async def health_check():
     try:
-        # Check database
-        async with db_manager.pool.acquire() as conn:
-            await conn.fetchval('SELECT 1')
-        db_healthy = True
+        # Check database if available
+        if db_manager and db_manager.pool:
+            async with db_manager.pool.acquire() as conn:
+                await conn.fetchval('SELECT 1')
+            db_healthy = True
+        else:
+            db_healthy = False
     except:
         db_healthy = False
     
@@ -518,18 +565,42 @@ async def main():
         # Initialize database
         db_manager = DatabaseManager(Config.DATABASE_URL)
         await db_manager.initialize()
-        
+
+        # Start FastAPI server so Railway has an open PORT
+        uv_config = uvicorn.Config(
+            fastapi_app, host="0.0.0.0", port=Config.PORT, log_level="info", loop="asyncio"
+        )
+        uv_server = uvicorn.Server(uv_config)
+        uv_task = asyncio.create_task(uv_server.serve())
+
         # Initialize bot
         bot = PersonalBotAssistant(db_manager)
         bot.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
         bot.setup_handlers()
         
-        # Start bot
+        # Start bot (polling mode) — fully async sequence
         logger.info("Starting Personal Bot Assistant - Phase 1")
         logger.info(f"Authorized users: {Config.ALLOWED_USER_IDS}")
-        
-        # Run the bot
-        await bot.application.run_polling(drop_pending_updates=True)
+
+        # Ensure no webhook blocks polling
+        await bot.application.bot.delete_webhook(drop_pending_updates=True)
+
+        # Application lifecycle (PTB v20)
+        await bot.application.initialize()
+        await bot.application.start()
+
+        # Start polling
+        if bot.application.updater is None:
+            raise RuntimeError("Application has no Updater; cannot start polling.")
+        await bot.application.updater.start_polling(drop_pending_updates=True)
+
+        # Idle forever (until process is stopped)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await bot.application.updater.stop()
+            await bot.application.stop()
+            await bot.application.shutdown()
         
     except Exception as e:
         logger.error(f"Application failed to start: {e}")
@@ -602,3 +673,23 @@ python-dotenv==1.0.0
 - Create financial reporting with matplotlib
 - Add CSV export functionality
 """
+
+# requirements.txt
+# Ultra-Minimal Requirements - Guaranteed Railway Success
+# Start with just the absolute essentials
+
+# Core Telegram Bot (REQUIRED)
+python-telegram-bot==20.7
+
+# Database
+asyncpg==0.29.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Web framework (for health checks)
+fastapi==0.104.1
+uvicorn==0.24.0
+
+# That's it! Just 5 packages to start.
+# Once this works, we'll add more features gradually.
