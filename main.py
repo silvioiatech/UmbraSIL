@@ -29,11 +29,11 @@ class Config:
     """Centralized configuration management"""
     
     # Railway Environment Variables
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8351097023:AAGOeOW9IyZU7MDPKK1b76FhlggsjAlqeaQ")
     DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL
     
     # Security
-    ALLOWED_USER_IDS = [int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()]
+    ALLOWED_USER_IDS = [8286836821]  # Your Telegram ID
     SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this")
     
     # Optional 2FA
@@ -201,26 +201,27 @@ class DatabaseManager:
 def require_auth(func):
     """Decorator to require authentication for bot commands"""
     @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         
         # Check if user is authorized
         if user_id not in Config.ALLOWED_USER_IDS:
+            logger.warning(f"Unauthorized access attempt from user {user_id}")
             await update.message.reply_text(
                 "🚫 Access denied. You are not authorized to use this bot."
             )
-            await db_manager.log_command(
+            await self.db.log_command(
                 user_id, func.__name__, "Unauthorized access attempt", False, "User not in whitelist"
             )
             return
         
         # Update user info
         user = update.effective_user
-        await db_manager.create_or_update_user(
+        await self.db.create_or_update_user(
             user.id, user.username, user.first_name, user.last_name
         )
         
-        return await func(update, context)
+        return await func(self, update, context)
     
     return wrapper
 
@@ -251,11 +252,15 @@ class PersonalBotAssistant:
         
         # Message handler for text messages
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        
+        logger.info("Bot handlers initialized")
     
     @require_auth
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler"""
         user = update.effective_user
+        logger.info(f"Start command from user {user.id} ({user.username})")
+        
         welcome_text = f"""
 🤖 **Personal Bot Assistant** - Phase 1 Active!
 
@@ -278,6 +283,9 @@ Use /menu to see available options or /help for commands.
     @require_auth
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Help command handler"""
+        user = update.effective_user
+        logger.info(f"Help command from user {user.id} ({user.username})")
+        
         help_text = """
 📚 **Available Commands:**
 
@@ -306,6 +314,9 @@ Natural language commands will work here!
     @require_auth
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Status command handler"""
+        user = update.effective_user
+        logger.info(f"Status command from user {user.id} ({user.username})")
+        
         try:
             # Check database connection
             async with self.db.pool.acquire() as conn:
@@ -336,6 +347,9 @@ Natural language commands will work here!
     @require_auth
     async def main_menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Main menu with inline keyboard"""
+        user = update.effective_user
+        logger.info(f"Menu command from user {user.id} ({user.username})")
+        
         keyboard = [
             [
                 InlineKeyboardButton("💰 Finances", callback_data="menu_finance"),
@@ -363,6 +377,8 @@ Natural language commands will work here!
         """Handle inline keyboard callbacks"""
         query = update.callback_query
         user_id = query.from_user.id
+        
+        logger.info(f"Callback query from user {user_id}: {query.data}")
         
         # Check authorization
         if user_id not in Config.ALLOWED_USER_IDS:
@@ -425,16 +441,22 @@ Natural language commands will work here!
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages (for future AI integration)"""
         message_text = update.message.text.lower()
+        user = update.effective_user
+        
+        logger.info(f"Received message from {user.id} ({user.username}): {message_text}")
         
         # Simple responses for Phase 1
         if any(word in message_text for word in ['hello', 'hi', 'hey']):
+            logger.info(f"Sending greeting to {user.id}")
             await update.message.reply_text(
                 "👋 Hello! I'm your Personal Bot Assistant.\n"
                 "Use /menu to see what I can do!"
             )
         elif any(word in message_text for word in ['status', 'health']):
+            logger.info(f"Sending status to {user.id}")
             await self.status_command(update, context)
         else:
+            logger.info(f"Sending default response to {user.id}")
             await update.message.reply_text(
                 "🤔 I don't understand that yet.\n"
                 "In Phase 5, I'll have AI capabilities!\n"
@@ -508,6 +530,16 @@ async def init_bot():
         logger.info("Starting Personal Bot Assistant - Phase 1")
         logger.info(f"Authorized users: {Config.ALLOWED_USER_IDS}")
         
+        # Set bot commands
+        commands = [
+            ("start", "Start the bot"),
+            ("help", "Show help message"),
+            ("menu", "Open main menu"),
+            ("status", "Check bot status")
+        ]
+        await bot.application.bot.set_my_commands(commands)
+        logger.info("Bot commands updated")
+        
         return bot
         
     except Exception as e:
@@ -524,20 +556,21 @@ async def run_bot():
         if bot and bot.application:
             logger.info("Starting bot polling...")
             await bot.application.initialize()
+            await bot.application.start()
             await bot.application.updater.start_polling()
             
             # Keep the bot running
-            running = True
-            while running:
+            while True:
                 try:
                     await asyncio.sleep(1)
-                except KeyboardInterrupt:
-                    running = False
+                except asyncio.CancelledError:
+                    break
                     
     except Exception as e:
         logger.error(f"Runtime error: {e}")
     finally:
         if bot and bot.application:
+            logger.info("Stopping bot...")
             await bot.application.stop()
             await bot.application.shutdown()
         if db_manager:
