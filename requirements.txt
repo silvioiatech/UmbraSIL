@@ -5,6 +5,7 @@ python-telegram-bot==20.7
 asyncpg==0.29.0
 python-dotenv==1.0.0
 APScheduler==3.10.4
+aiohttp==3.8.5
 
 # Finance Management
 google-cloud-vision==3.4.4
