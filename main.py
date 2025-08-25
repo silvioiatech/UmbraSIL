@@ -518,18 +518,28 @@ async def init_bot():
 
 async def run_bot():
     """Run the bot with proper cleanup"""
+    bot = None
     try:
         bot = await init_bot()
         if bot and bot.application:
-            async with bot.application:
-                logger.info("Starting bot polling...")
-                await bot.application.start()
-                await bot.application.run_polling(drop_pending_updates=True)
-                
+            logger.info("Starting bot polling...")
+            await bot.application.initialize()
+            await bot.application.updater.start_polling()
+            
+            # Keep the bot running
+            running = True
+            while running:
+                try:
+                    await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    running = False
+                    
     except Exception as e:
         logger.error(f"Runtime error: {e}")
-        raise
     finally:
+        if bot and bot.application:
+            await bot.application.stop()
+            await bot.application.shutdown()
         if db_manager:
             await db_manager.close()
             logger.info("Database connection closed")
@@ -537,18 +547,11 @@ async def run_bot():
 def main():
     """Main application entry point"""
     try:
-        # Create new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Run the bot
-        loop.run_until_complete(run_bot())
+        asyncio.run(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user!")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
-    finally:
-        loop.close()
 
 if __name__ == "__main__":
     main()
