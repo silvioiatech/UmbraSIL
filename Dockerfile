@@ -20,6 +20,7 @@ COPY . .
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONASYNCIODEBUG=1
 
 # Command to run the application
 CMD ["python", "main.py"]
