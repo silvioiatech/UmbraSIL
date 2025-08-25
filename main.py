@@ -490,22 +490,22 @@ async def health_check():
 # Global database manager
 db_manager = None
 
-async def main():
-    """Main application entry point"""
+async def init_bot():
+    """Initialize bot and database"""
     global db_manager
     
     # Validate configuration
     if not Config.TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is required")
-        return
+        return None
     
     if not Config.DATABASE_URL:
         logger.error("DATABASE_URL environment variable is required")
-        return
+        return None
     
     if not Config.ALLOWED_USER_IDS:
         logger.error("ALLOWED_USER_IDS environment variable is required")
-        return
+        return None
     
     try:
         # Initialize database
@@ -517,81 +517,40 @@ async def main():
         bot.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
         bot.setup_handlers()
         
-        # Start bot
         logger.info("Starting Personal Bot Assistant - Phase 1")
         logger.info(f"Authorized users: {Config.ALLOWED_USER_IDS}")
         
-        # Run the bot
-        await bot.application.run_polling(drop_pending_updates=True)
+        return bot
         
     except Exception as e:
         logger.error(f"Application failed to start: {e}")
-        raise
-    finally:
         if db_manager:
             await db_manager.close()
+        raise
+
+async def run_bot():
+    """Run the bot with proper cleanup"""
+    bot = await init_bot()
+    if bot:
+        try:
+            await bot.application.initialize()
+            await bot.application.start()
+            await bot.application.run_polling(drop_pending_updates=True)
+        finally:
+            if bot.application:
+                await bot.application.stop()
+                await bot.application.shutdown()
+            if db_manager:
+                await db_manager.close()
+
+def main():
+    """Main application entry point"""
+    try:
+        asyncio.run(run_bot())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped!")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
-# ==============================================================================
-# REQUIREMENTS.txt (for Railway deployment)
-# ==============================================================================
-
-"""
-# Add this to requirements.txt:
-
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-telegram-bot==20.7
-asyncpg==0.29.0
-python-dotenv==1.0.0
-"""
-
-# ==============================================================================
-# RAILWAY DEPLOYMENT INSTRUCTIONS
-# ==============================================================================
-
-"""
-🚀 RAILWAY DEPLOYMENT STEPS:
-
-1. **Create Railway Project:**
-   - Connect your GitHub repo
-   - Enable auto-deploy from main branch
-
-2. **Add PostgreSQL Database:**
-   - Go to your project dashboard
-   - Click "New" → "Database" → "PostgreSQL"
-   - Railway will provide DATABASE_URL automatically
-
-3. **Set Environment Variables:**
-   - TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-   - ALLOWED_USER_IDS=123456789,987654321  (comma-separated)
-   - SECRET_KEY=your-super-secret-key-here
-   - ENABLE_2FA=false  (optional)
-   - LOG_LEVEL=INFO
-   - PORT=8000
-
-4. **Deploy:**
-   - Push to GitHub
-   - Railway will auto-deploy
-   - Check logs for any issues
-
-5. **Test:**
-   - Start your bot with /start
-   - Try /menu and /status commands
-   - Verify database connectivity
-
-🔒 SECURITY CHECKLIST:
-- ✅ User ID whitelist implemented
-- ✅ Environment variables secured
-- ✅ Database connection pooling
-- ✅ Command logging for monitoring
-- ✅ Error handling and validation
-
-📝 NEXT STEPS (Phase 2):
-- Add expense/income CRUD operations
-- Integrate Google Vision API for OCR
-- Create financial reporting with matplotlib
-- Add CSV export functionality
-"""
+    main()
