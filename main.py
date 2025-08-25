@@ -494,27 +494,15 @@ async def init_bot():
     """Initialize bot and database"""
     global db_manager
     
-    # Validate configuration
-    if not Config.TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN environment variable is required")
-        return None
-    
-    if not Config.DATABASE_URL:
-        logger.error("DATABASE_URL environment variable is required")
-        return None
-    
-    if not Config.ALLOWED_USER_IDS:
-        logger.error("ALLOWED_USER_IDS environment variable is required")
-        return None
-    
     try:
         # Initialize database
         db_manager = DatabaseManager(Config.DATABASE_URL)
         await db_manager.initialize()
         
         # Initialize bot
+        application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
         bot = PersonalBotAssistant(db_manager)
-        bot.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
+        bot.application = application
         bot.setup_handlers()
         
         logger.info("Starting Personal Bot Assistant - Phase 1")
@@ -523,34 +511,44 @@ async def init_bot():
         return bot
         
     except Exception as e:
-        logger.error(f"Application failed to start: {e}")
+        logger.error(f"Initialization error: {e}")
         if db_manager:
             await db_manager.close()
         raise
 
 async def run_bot():
     """Run the bot with proper cleanup"""
-    bot = await init_bot()
-    if bot:
-        try:
-            await bot.application.initialize()
-            await bot.application.start()
-            await bot.application.run_polling(drop_pending_updates=True)
-        finally:
-            if bot.application:
-                await bot.application.stop()
-                await bot.application.shutdown()
-            if db_manager:
-                await db_manager.close()
+    try:
+        bot = await init_bot()
+        if bot and bot.application:
+            async with bot.application:
+                logger.info("Starting bot polling...")
+                await bot.application.start()
+                await bot.application.run_polling(drop_pending_updates=True)
+                
+    except Exception as e:
+        logger.error(f"Runtime error: {e}")
+        raise
+    finally:
+        if db_manager:
+            await db_manager.close()
+            logger.info("Database connection closed")
 
 def main():
     """Main application entry point"""
     try:
-        asyncio.run(run_bot())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped!")
+        # Create new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Run the bot
+        loop.run_until_complete(run_bot())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user!")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
+    finally:
+        loop.close()
 
 if __name__ == "__main__":
     main()
