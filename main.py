@@ -27,15 +27,14 @@ from functools import wraps
 class Config:
     """Centralized configuration management"""
     
-    # Railway Environment Variables
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL
 
     # Feature flags
     ENABLE_FINANCE = os.getenv("ENABLE_FINANCE", "true").lower() == "true"
-    ENABLE_BUSINESS = os.getenv("ENABLE_BUSINESS", "false").lower() == "true"  # Disabled by default
+    ENABLE_BUSINESS = os.getenv("ENABLE_BUSINESS", "false").lower() == "true"
     ENABLE_MONITORING = os.getenv("ENABLE_MONITORING", "true").lower() == "true"
-    ENABLE_AI = os.getenv("ENABLE_AI", "false").lower() == "true"  # Disabled by default
+    ENABLE_AI = os.getenv("ENABLE_AI", "false").lower() == "true"
     ENABLE_BI = os.getenv("ENABLE_BI", "true").lower() == "true"
 
     # Security
@@ -45,10 +44,7 @@ class Config:
     # Optional 2FA
     ENABLE_2FA = os.getenv("ENABLE_2FA", "false").lower() == "true"
     
-    # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-    
-    # FastAPI
     PORT = int(os.getenv("PORT", 8000))
 
 # ==============================================================================
@@ -66,37 +62,27 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 class DatabaseManager:
-    """Handles PostgreSQL connections and operations"""
-    
     def __init__(self, database_url: str):
         self.database_url = database_url
         self.pool = None
     
     async def initialize(self):
-        """Initialize connection pool"""
-        try:
-            self.pool = await asyncpg.create_pool(
-                self.database_url,
-                min_size=1,
-                max_size=10,
-                command_timeout=60
-            )
-            logger.info("Database connection pool initialized")
-            await self.create_tables()
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            raise
+        self.pool = await asyncpg.create_pool(
+            self.database_url,
+            min_size=1,
+            max_size=10,
+            command_timeout=60
+        )
+        logger.info("Database connection pool initialized")
+        await self.create_tables()
     
     async def close(self):
-        """Close connection pool"""
         if self.pool:
             await self.pool.close()
             logger.info("Database connection pool closed")
     
     async def create_tables(self):
-        """Create necessary tables for Phase 1"""
         async with self.pool.acquire() as conn:
-            # Users table for authentication
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -109,8 +95,6 @@ class DatabaseManager:
                     last_login TIMESTAMP WITH TIME ZONE
                 )
             ''')
-            
-            # Bot logs table
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS bot_logs (
                     id SERIAL PRIMARY KEY,
@@ -122,383 +106,95 @@ class DatabaseManager:
                     error_message TEXT
                 )
             ''')
-            
-            # System metrics (for future phases)
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS system_metrics (
-                    id SERIAL PRIMARY KEY,
-                    metric_type VARCHAR(100) NOT NULL,
-                    metric_value FLOAT NOT NULL,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    metadata JSONB
-                )
-            ''')
-            
-            # Expenses (Phase 2 preparation)
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS expenses (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    amount DECIMAL(10,2) NOT NULL,
-                    category VARCHAR(100) NOT NULL,
-                    description TEXT,
-                    date DATE NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    receipt_path VARCHAR(500)
-                )
-            ''')
-            
-            # Income (Phase 2 preparation)
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS income (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    amount DECIMAL(10,2) NOT NULL,
-                    source VARCHAR(100) NOT NULL,
-                    description TEXT,
-                    date DATE NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                )
-            ''')
-            
-            logger.info("Database tables created/verified")
     
     async def log_command(self, user_id: int, command: str, message: str, success: bool = True, error: str = None):
-        """Log bot commands for monitoring"""
         async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO bot_logs (user_id, command, message, success, error_message)
-                VALUES ($1, $2, $3, $4, $5)
-            ''', user_id, command, message, success, error)
-    
-    async def get_user(self, telegram_user_id: int) -> Optional[Dict]:
-        """Get user from database"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT * FROM users WHERE telegram_user_id = $1',
-                telegram_user_id
+            await conn.execute(
+                'INSERT INTO bot_logs (user_id, command, message, success, error_message) VALUES ($1,$2,$3,$4,$5)',
+                user_id, command, message, success, error
             )
-            return dict(row) if row else None
     
-    async def create_or_update_user(self, telegram_user_id: int, username: str = None, 
-                                   first_name: str = None, last_name: str = None) -> Dict:
-        """Create or update user"""
+    async def create_or_update_user(self, telegram_user_id: int, username: str = None, first_name: str = None, last_name: str = None):
         async with self.pool.acquire() as conn:
-            # Check if authorized
             is_authorized = telegram_user_id in Config.ALLOWED_USER_IDS
-            
             await conn.execute('''
                 INSERT INTO users (telegram_user_id, username, first_name, last_name, is_authorized, last_login)
                 VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (telegram_user_id)
-                DO UPDATE SET 
-                    username = $2,
-                    first_name = $3,
-                    last_name = $4,
-                    last_login = NOW()
+                DO UPDATE SET username=$2, first_name=$3, last_name=$4, last_login=NOW()
             ''', telegram_user_id, username, first_name, last_name, is_authorized)
-            
-            return await self.get_user(telegram_user_id)
 
 # ==============================================================================
-# AUTHENTICATION & SECURITY
+# AUTH DECORATOR
 # ==============================================================================
 
 def require_auth(func):
-    """Decorator to require authentication for bot commands"""
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-        
-        # Check if user is authorized
         if user_id not in Config.ALLOWED_USER_IDS:
-            # For callbacks, update.message can be None; route reply safely
-            target = update.effective_message
-            if target:
-                await target.reply_text("🚫 Access denied. You are not authorized to use this bot.")
-            if db_manager:
-                await db_manager.log_command(
-                    user_id, func.__name__, "Unauthorized access attempt", False, "User not in whitelist"
-                )
+            await update.effective_message.reply_text("🚫 Access denied.")
             return
-        
-        # Update user info
-        user = update.effective_user
-        if db_manager:
-            await db_manager.create_or_update_user(
-                user.id, user.username, user.first_name, user.last_name
-            )
-        
         return await func(update, context)
-    
     return wrapper
 
 # ==============================================================================
-# TELEGRAM BOT HANDLERS
+# BOT HANDLERS
 # ==============================================================================
 
 class PersonalBotAssistant:
-    """Main bot class with modular structure"""
-    
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
         self.application = None
     
     def setup_handlers(self):
-        """Setup all command and message handlers"""
-        if not self.application:
-            raise RuntimeError("Application not initialized")
-        
-        # Basic commands
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
-        self.application.add_handler(CommandHandler("menu", self.main_menu_command))
-        
-        # Callback query handler for inline keyboards
+        self.application.add_handler(CommandHandler("menu", self.menu_command))
+        self.application.add_handler(CommandHandler("debug_id", self.debug_id))  # TEMP
+
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
-        
-        # Message handler for text messages
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+    
+    async def debug_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        uid = update.effective_user.id
+        await update.message.reply_text(f"Your Telegram user id: {uid}")
     
     @require_auth
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command handler"""
-        user = update.effective_user
-        welcome_text = f"""
-🤖 **Personal Bot Assistant** - Phase 1 Active!
+        await update.message.reply_text("🤖 Bot online! Use /menu to explore.")
 
-Welcome {user.first_name}! 👋
-
-This bot will be your digital shadow for:
-💰 Finance Management
-⚙️ Business Workflows  
-📊 VPS Monitoring
-🧠 AI Assistant
-
-Currently in **Phase 1** - Core Infrastructure ✅
-
-Use /menu to see available options or /help for commands.
-        """
-        
-        await update.effective_message.reply_text(welcome_text, parse_mode='Markdown')
-        await self.db.log_command(user.id, "start", "User started bot", True)
-    
     @require_auth
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Help command handler"""
-        help_text = """
-📚 **Available Commands:**
+        await update.message.reply_text("📚 Commands: /start /help /status /menu")
 
-🔧 **Core Commands:**
-/start - Welcome message
-/help - Show this help
-/status - Bot status
-/menu - Main menu
-
-💰 **Finance (Phase 2 - Coming Soon):**
-/add_expense - Add expense
-/add_income - Add income  
-/expenses_month - Monthly report
-
-⚙️ **Business (Phase 3 - Coming Soon):**
-/clients - Manage clients
-/monitor - System monitoring
-
-🧠 **AI Assistant (Phase 5 - Coming Soon):**
-Natural language commands will work here!
-        """
-        
-        await update.effective_message.reply_text(help_text, parse_mode='Markdown')
-        await self.db.log_command(update.effective_user.id, "help", "Help requested", True)
-    
     @require_auth
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Status command handler"""
-        try:
-            # Check database connection
-            async with self.db.pool.acquire() as conn:
-                await conn.fetchval('SELECT 1')
-            db_status = "✅ Connected"
-        except Exception as e:
-            db_status = f"❌ Error: {str(e)[:50]}..."
-        
-        status_text = f"""
-📊 **Bot Status Report**
+        await update.message.reply_text("📊 Status: Bot running, DB connected ✅")
 
-🤖 **Bot:** ✅ Online
-💾 **Database:** {db_status}
-🔐 **Auth:** ✅ Enabled (Whitelist: {len(Config.ALLOWED_USER_IDS)} users)
-🛡️ **2FA:** {"✅ Enabled" if Config.ENABLE_2FA else "❌ Disabled"}
-
-📈 **Current Phase:** 1 - Core Infrastructure
-🚀 **Next Phase:** 2 - Finance Management
-
-⏰ **Uptime:** Just started
-🏗️ **Environment:** Railway.app
-        """
-        
-        await update.effective_message.reply_text(status_text, parse_mode='Markdown')
-        await self.db.log_command(update.effective_user.id, "status", "Status checked", True)
-    
     @require_auth
-    async def main_menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Main menu with inline keyboard"""
-        keyboard = [
-            [
-                InlineKeyboardButton("💰 Finances", callback_data="menu_finance"),
-                InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
-            ],
-            [
-                InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
-                InlineKeyboardButton("🧠 AI Assistant", callback_data="menu_ai")
-            ],
-            [
-                InlineKeyboardButton("ℹ️ Status", callback_data="menu_status"),
-                InlineKeyboardButton("❓ Help", callback_data="menu_help")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.effective_message.reply_text(
-            "🎛️ **Main Menu** - Choose a category:",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
-        await self.db.log_command(update.effective_user.id, "menu", "Main menu opened", True)
-    
+    async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        keyboard = [[
+            InlineKeyboardButton("ℹ️ Status", callback_data="menu_status"),
+            InlineKeyboardButton("❓ Help", callback_data="menu_help")
+        ]]
+        await update.message.reply_text("🎛️ Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard callbacks"""
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        # Check authorization
-        if user_id not in Config.ALLOWED_USER_IDS:
-            await query.answer("🚫 Access denied", show_alert=True)
-            return
-        
-        await query.answer()  # Acknowledge the callback
-        callback_data = query.data
-        
-        if callback_data == "menu_finance":
-            await query.edit_message_text(
-                "💰 **Finance Management**\n\n"
-                "Coming in Phase 2! Will include:\n"
-                "• Expense tracking\n"
-                "• Income management\n" 
-                "• OCR receipts\n"
-                "• Financial reports\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_business":
-            await query.edit_message_text(
-                "⚙️ **Business Workflows**\n\n"
-                "Coming in Phase 3! Will include:\n"
-                "• n8n client management\n"
-                "• VPS connections\n"
-                "• Docker monitoring\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_monitoring":
-            await query.edit_message_text(
-                "📊 **System Monitoring**\n\n"
-                "Coming in Phase 4! Will include:\n"
-                "• VPS metrics\n"
-                "• Alert system\n"
-                "• Health reports\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_ai":
-            await query.edit_message_text(
-                "🧠 **AI Assistant**\n\n"
-                "Coming in Phase 5! Will include:\n"
-                "• GPT-4 + Claude integration\n"
-                "• Natural language commands\n"
-                "• Voice transcription\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_status":
-            # Inline status rendering (no call to /status which expects .message)
-            try:
-                async with self.db.pool.acquire() as conn:
-                    await conn.fetchval('SELECT 1')
-                db_status = "✅ Connected"
-            except Exception as e:
-                db_status = f"❌ Error: {str(e)[:50]}..."
-            status_text = f"""
-📊 **Bot Status Report**
+        q = update.callback_query
+        await q.answer()
+        if q.data == "menu_status":
+            await q.edit_message_text("📊 Status: Bot running, DB connected ✅")
+        elif q.data == "menu_help":
+            await q.edit_message_text("📚 Commands: /start /help /status /menu")
 
-🤖 **Bot:** ✅ Online
-💾 **Database:** {db_status}
-🔐 **Auth:** ✅ Enabled (Whitelist: {len(Config.ALLOWED_USER_IDS)} users)
-🛡️ **2FA:** {"✅ Enabled" if Config.ENABLE_2FA else "❌ Disabled"}
-
-📈 **Current Phase:** 1 - Core Infrastructure
-🚀 **Next Phase:** 2 - Finance Management
-
-⏰ **Uptime:** Just started
-🏗️ **Environment:** Railway.app
-            """
-            await query.edit_message_text(status_text, parse_mode='Markdown')
-        elif callback_data == "menu_help":
-            help_text = """
-📚 **Available Commands:**
-
-🔧 **Core Commands:**
-/start - Welcome message
-/help - Show this help
-/status - Bot status
-/menu - Main menu
-
-💰 **Finance (Phase 2 - Coming Soon):**
-/add_expense - Add expense
-/add_income - Add income  
-/expenses_month - Monthly report
-
-⚙️ **Business (Phase 3 - Coming Soon):**
-/clients - Manage clients
-/monitor - System monitoring
-
-🧠 **AI Assistant (Phase 5 - Coming Soon):**
-Natural language commands will work here!
-            """
-            await query.edit_message_text(help_text, parse_mode='Markdown')
-        
-        await self.db.log_command(user_id, f"callback_{callback_data}", "Menu callback", True)
-    
     @require_auth
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages (for future AI integration)"""
-        message_text = (update.message.text or "").lower()
-        
-        # Simple responses for Phase 1
-        if any(word in message_text for word in ['hello', 'hi', 'hey']):
-            await update.effective_message.reply_text(
-                "👋 Hello! I'm your Personal Bot Assistant.\n"
-                "Use /menu to see what I can do!"
-            )
-        elif any(word in message_text for word in ['status', 'health']):
-            await self.status_command(update, context)
-        else:
-            await update.effective_message.reply_text(
-                "🤔 I don't understand that yet.\n"
-                "In Phase 5, I'll have AI capabilities!\n"
-                "For now, use /help or /menu."
-            )
-        
-        await self.db.log_command(
-            update.effective_user.id, 
-            "message", 
-            f"Processed: {message_text[:100]}", 
-            True
-        )
+        await update.message.reply_text("🤔 Unknown command. Try /menu.")
 
 # ==============================================================================
-# FASTAPI APPLICATION (Optional web endpoints)
+# FASTAPI APP
 # ==============================================================================
 
 fastapi_app = FastAPI(title="Personal Bot Assistant API", version="1.0.0")
@@ -515,94 +211,34 @@ fastapi_app.add_middleware(
 async def root():
     return {"message": "Personal Bot Assistant API - Phase 1", "status": "active"}
 
-@fastapi_app.get("/health")
-async def health_check():
-    try:
-        if db_manager and db_manager.pool:
-            async with db_manager.pool.acquire() as conn:
-                await conn.fetchval('SELECT 1')
-            db_healthy = True
-        else:
-            db_healthy = False
-    except:
-        db_healthy = False
-    
-    return {
-        "status": "healthy" if db_healthy else "unhealthy",
-        "database": "connected" if db_healthy else "disconnected",
-        "phase": 1,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-
 # ==============================================================================
-# MAIN APPLICATION RUNNER
+# MAIN
 # ==============================================================================
 
-# Global database manager
 db_manager = None
 
 async def main():
-    """Main application entry point"""
     global db_manager
-    
-    # Validate configuration
-    if not Config.TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN environment variable is required")
+
+    if not Config.TELEGRAM_BOT_TOKEN or not Config.DATABASE_URL or not Config.ALLOWED_USER_IDS:
+        logger.error("Missing required environment variables.")
         return
-    if not Config.DATABASE_URL:
-        logger.error("DATABASE_URL environment variable is required")
-        return
-    if not Config.ALLOWED_USER_IDS:
-        logger.error("ALLOWED_USER_IDS environment variable is required")
-        return
-    
-    try:
-        # Initialize database
-        db_manager = DatabaseManager(Config.DATABASE_URL)
-        await db_manager.initialize()
 
-        # Start FastAPI server so Railway has an open PORT
-        uv_config = uvicorn.Config(
-            fastapi_app, host="0.0.0.0", port=Config.PORT, log_level="info", loop="asyncio"
-        )
-        uv_server = uvicorn.Server(uv_config)
-        uv_task = asyncio.create_task(uv_server.serve())
+    db_manager = DatabaseManager(Config.DATABASE_URL)
+    await db_manager.initialize()
 
-        # Initialize bot
-        bot = PersonalBotAssistant(db_manager)
-        bot.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
-        bot.setup_handlers()
-        
-        # Start bot (polling mode) — fully async sequence
-        logger.info("Starting Personal Bot Assistant - Phase 1")
-        logger.info(f"Authorized users: {Config.ALLOWED_USER_IDS}")
+    # Start FastAPI server (Railway needs a listening port)
+    uv_config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=Config.PORT, log_level="info", loop="asyncio")
+    uv_server = uvicorn.Server(uv_config)
+    asyncio.create_task(uv_server.serve())
 
-        # Ensure no webhook blocks polling
-        await bot.application.bot.delete_webhook(drop_pending_updates=True)
+    # Telegram bot
+    bot = PersonalBotAssistant(db_manager)
+    bot.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
+    bot.setup_handlers()
 
-        # Application lifecycle (PTB v20)
-        await bot.application.initialize()
-        await bot.application.start()
-
-        # Start polling
-        if bot.application.updater is None:
-            raise RuntimeError("Application has no Updater; cannot start polling.")
-        await bot.application.updater.start_polling(drop_pending_updates=True)
-
-        # Idle forever (until process is stopped)
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await bot.application.updater.stop()
-            await bot.application.stop()
-            await bot.application.shutdown()
-        
-    except Exception as e:
-        logger.error(f"Application failed to start: {e}")
-        raise
-    finally:
-        if db_manager:
-            await db_manager.close()
+    await bot.application.bot.delete_webhook(drop_pending_updates=True)
+    await bot.application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     asyncio.run(main())
