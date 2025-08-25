@@ -31,11 +31,18 @@ class Config:
     # Railway Environment Variables
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL
-    
+
+    # These should be in your SystemConfig class
+    ENABLE_FINANCE = os.getenv("ENABLE_FINANCE", "true").lower() == "true"
+    ENABLE_BUSINESS = os.getenv("ENABLE_BUSINESS", "false").lower() == "true"  # Disabled by default
+    ENABLE_MONITORING = os.getenv("ENABLE_MONITORING", "true").lower() == "true"
+    ENABLE_AI = os.getenv("ENABLE_AI", "false").lower() == "true"  # Disabled by default
+    ENABLE_BI = os.getenv("ENABLE_BI", "true").lower() == "true"
+
     # Security
     ALLOWED_USER_IDS = [int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()]
     SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this")
-    
+
     # Optional 2FA
     ENABLE_2FA = os.getenv("ENABLE_2FA", "false").lower() == "true"
     
