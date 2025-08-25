@@ -1,590 +1,829 @@
-# Personal Telegram Bot Assistant - Phase 1: Core Infrastructure
-# Railway.app + PostgreSQL + python-telegram-bot + FastAPI
-
 import os
+import sys
 import logging
 import asyncio
-import asyncpg
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone
+import psutil
+import platform
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Optional, List
+from decimal import Decimal
+from dotenv import load_dotenv
+from telegram import (
+    Update, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup,
+    BotCommand,
+    Message
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+from bot.core import (
+    DatabaseManager,
+    SecurityManager,
+    require_auth,
+    logger,
+    BotError,
+    DatabaseError,
+    AuthenticationError
+)
+from bot.modules.finance import FinanceManager
+from bot.modules.business import BusinessManager
+from bot.modules.monitoring import MonitoringManager
+from bot.modules.ai import AIManager, AIConfig
 
-# FastAPI for potential web endpoints
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
+# Load environment variables
+load_dotenv()
 
-# Telegram Bot
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-
-# Security & Auth
-import hashlib
-import hmac
-from functools import wraps
-
-# ==============================================================================
-# CONFIGURATION & ENVIRONMENT VARIABLES
-# ==============================================================================
-
-class Config:
-    """Centralized configuration management"""
-    
-    # Railway Environment Variables
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8351097023:AAGOeOW9IyZU7MDPKK1b76FhlggsjAlqeaQ")
-    DATABASE_URL = os.getenv("DATABASE_URL")  # Railway PostgreSQL
-    
-    # Security
-    ALLOWED_USER_IDS = [8286836821]  # Your Telegram ID
-    SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this")
-    
-    # Optional 2FA
-    ENABLE_2FA = os.getenv("ENABLE_2FA", "false").lower() == "true"
-    
-    # Logging
-    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-    
-    # FastAPI
-    PORT = int(os.getenv("PORT", 8000))
-
-# ==============================================================================
-# LOGGING SETUP
-# ==============================================================================
-
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=getattr(logging, Config.LOG_LEVEL.upper())
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# DATABASE CONNECTION MANAGER
-# ==============================================================================
+class BotMetrics:
+    """Track bot performance metrics"""
+    
+    def __init__(self):
+        self.start_time = datetime.now(timezone.utc)
+        self.command_count = 0
+        self.error_count = 0
+        self.last_error: Optional[str] = None
+        self.active_users: Dict[int, datetime] = {}
+        self.response_times: List[float] = []
+    
+    def log_command(self, response_time: float):
+        """Log command execution"""
+        self.command_count += 1
+        self.response_times.append(response_time)
+        if len(self.response_times) > 1000:
+            self.response_times = self.response_times[-1000:]
+    
+    def log_error(self, error: str):
+        """Log error occurrence"""
+        self.error_count += 1
+        self.last_error = error
+    
+    def log_user_activity(self, user_id: int):
+        """Log user activity"""
+        self.active_users[user_id] = datetime.now(timezone.utc)
+    
+    def get_average_response_time(self) -> float:
+        """Get average response time"""
+        if not self.response_times:
+            return 0.0
+        return sum(self.response_times) / len(self.response_times)
+    
+    def get_active_users_count(self) -> int:
+        """Get count of active users in last 24h"""
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=24)
+        return sum(1 for time in self.active_users.values() if time > cutoff)
+    
+    def get_uptime(self) -> timedelta:
+        """Get bot uptime"""
+        return datetime.now(timezone.utc) - self.start_time
+    
+    def get_success_rate(self) -> float:
+        """Get command success rate"""
+        if self.command_count == 0:
+            return 100.0
+        return ((self.command_count - self.error_count) / self.command_count) * 100
 
-class DatabaseManager:
-    """Handles PostgreSQL connections and operations"""
+class Bot:
+    """Main bot class"""
     
-    def __init__(self, database_url: str):
-        self.database_url = database_url
-        self.pool = None
-    
-    async def initialize(self):
-        """Initialize connection pool"""
+    def __init__(self):
+        """Initialize bot and its components"""
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if not self.token:
+            raise ValueError("No token provided")
+        
+        # Initialize metrics
+        self.metrics = BotMetrics()
+        
         try:
-            self.pool = await asyncpg.create_pool(
-                self.database_url,
-                min_size=1,
-                max_size=10,
-                command_timeout=60
-            )
-            logger.info("Database connection pool initialized")
-            await self.create_tables()
+            # Initialize core components
+            self.db = DatabaseManager()
+            self.security = SecurityManager()
+            
+            # Initialize modules
+            self.finance = FinanceManager(self.db)
+            self.business = BusinessManager(self.db)
+            self.monitoring = MonitoringManager(self.db)
+            self.ai = AIManager(self.db)
+            
+            # Create application
+            self.application = Application.builder().token(self.token).build()
+            
+            logger.info("Bot initialized successfully")
         except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
+            logger.error(f"Failed to initialize bot: {e}")
             raise
-    
-    async def close(self):
-        """Close connection pool"""
-        if self.pool:
-            await self.pool.close()
-            logger.info("Database connection pool closed")
-    
-    async def create_tables(self):
-        """Create necessary tables for Phase 1"""
-        async with self.pool.acquire() as conn:
-            # Users table for authentication
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    telegram_user_id BIGINT UNIQUE NOT NULL,
-                    username VARCHAR(255),
-                    first_name VARCHAR(255),
-                    last_name VARCHAR(255),
-                    is_authorized BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    last_login TIMESTAMP WITH TIME ZONE
-                )
-            ''')
+                async def get_system_status(self) -> Dict[str, Any]:
+        """Get detailed system status"""
+        try:
+            cpu_percent = psutil.cpu_percent()
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
             
-            # Bot logs table
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS bot_logs (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    command VARCHAR(255),
-                    message TEXT,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    success BOOLEAN DEFAULT TRUE,
-                    error_message TEXT
-                )
-            ''')
+            avg_response = self.metrics.get_average_response_time()
+            uptime = self.metrics.get_uptime()
+            success_rate = self.metrics.get_success_rate()
             
-            # System metrics (for future phases)
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS system_metrics (
-                    id SERIAL PRIMARY KEY,
-                    metric_type VARCHAR(100) NOT NULL,
-                    metric_value FLOAT NOT NULL,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    metadata JSONB
-                )
-            ''')
-            
-            # Expenses (Phase 2 preparation)
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS expenses (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    amount DECIMAL(10,2) NOT NULL,
-                    category VARCHAR(100) NOT NULL,
-                    description TEXT,
-                    date DATE NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    receipt_path VARCHAR(500)
-                )
-            ''')
-            
-            # Income (Phase 2 preparation)
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS income (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    amount DECIMAL(10,2) NOT NULL,
-                    source VARCHAR(100) NOT NULL,
-                    description TEXT,
-                    date DATE NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                )
-            ''')
-            
-            logger.info("Database tables created/verified")
-    
-    async def log_command(self, user_id: int, command: str, message: str, success: bool = True, error: str = None):
-        """Log bot commands for monitoring"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO bot_logs (user_id, command, message, success, error_message)
-                VALUES ($1, $2, $3, $4, $5)
-            ''', user_id, command, message, success, error)
-    
-    async def get_user(self, telegram_user_id: int) -> Optional[Dict]:
-        """Get user from database"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT * FROM users WHERE telegram_user_id = $1',
-                telegram_user_id
-            )
-            return dict(row) if row else None
-    
-    async def create_or_update_user(self, telegram_user_id: int, username: str = None, 
-                                   first_name: str = None, last_name: str = None) -> Dict:
-        """Create or update user"""
-        async with self.pool.acquire() as conn:
-            # Check if authorized
-            is_authorized = telegram_user_id in Config.ALLOWED_USER_IDS
-            
-            await conn.execute('''
-                INSERT INTO users (telegram_user_id, username, first_name, last_name, is_authorized, last_login)
-                VALUES ($1, $2, $3, $4, $5, NOW())
-                ON CONFLICT (telegram_user_id)
-                DO UPDATE SET 
-                    username = $2,
-                    first_name = $3,
-                    last_name = $4,
-                    last_login = NOW()
-            ''', telegram_user_id, username, first_name, last_name, is_authorized)
-            
-            return await self.get_user(telegram_user_id)
+            return {
+                "system": {
+                    "platform": platform.platform(),
+                    "python": platform.python_version(),
+                    "uptime": str(uptime).split('.')[0],
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                },
+                "resources": {
+                    "cpu": f"{cpu_percent}%",
+                    "memory": f"{memory.percent}%",
+                    "disk": f"{disk.percent}%"
+                },
+                "performance": {
+                    "avg_response": f"{avg_response:.2f}s",
+                    "success_rate": f"{success_rate:.1f}%",
+                    "commands_handled": self.metrics.command_count,
+                    "active_users_24h": self.metrics.get_active_users_count()
+                },
+                "modules": {
+                    "finance": self.finance.is_operational(),
+                    "business": self.business.is_operational(),
+                    "monitoring": self.monitoring.is_operational(),
+                    "ai": self.ai.is_operational()
+                },
+                "database": await self.db.check_connection(),
+                "last_error": self.metrics.last_error
+            }
+        except Exception as e:
+            logger.error(f"Error getting system status: {e}")
+            return {"error": str(e)}
 
-# ==============================================================================
-# AUTHENTICATION & SECURITY
-# ==============================================================================
-
-def require_auth(func):
-    """Decorator to require authentication for bot commands"""
-    @wraps(func)
-    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        
-        # Check if user is authorized
-        if user_id not in Config.ALLOWED_USER_IDS:
-            logger.warning(f"Unauthorized access attempt from user {user_id}")
-            await update.message.reply_text(
-                "🚫 Access denied. You are not authorized to use this bot."
-            )
-            await self.db.log_command(
-                user_id, func.__name__, "Unauthorized access attempt", False, "User not in whitelist"
-            )
-            return
-        
-        # Update user info
-        user = update.effective_user
-        await self.db.create_or_update_user(
-            user.id, user.username, user.first_name, user.last_name
-        )
-        
-        return await func(self, update, context)
-    
-    return wrapper
-
-# ==============================================================================
-# TELEGRAM BOT HANDLERS
-# ==============================================================================
-
-class PersonalBotAssistant:
-    """Main bot class with modular structure"""
-    
-    def __init__(self, db_manager: DatabaseManager):
-        self.db = db_manager
-        self.application = None
-    
-    def setup_handlers(self):
-        """Setup all command and message handlers"""
-        if not self.application:
-            raise RuntimeError("Application not initialized")
-        
-        # Basic commands
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
-        self.application.add_handler(CommandHandler("menu", self.main_menu_command))
-        
-        # Callback query handler for inline keyboards
-        self.application.add_handler(CallbackQueryHandler(self.handle_callback))
-        
-        # Message handler for text messages
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        
-        logger.info("Bot handlers initialized")
-    
-    @require_auth
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command handler"""
-        user = update.effective_user
-        logger.info(f"Start command from user {user.id} ({user.username})")
-        
-        welcome_text = f"""
-🤖 **Personal Bot Assistant** - Phase 1 Active!
-
-Welcome {user.first_name}! 👋
-
-This bot will be your digital shadow for:
-💰 Finance Management
-⚙️ Business Workflows  
-📊 VPS Monitoring
-🧠 AI Assistant
-
-Currently in **Phase 1** - Core Infrastructure ✅
-
-Use /menu to see available options or /help for commands.
-        """
-        
-        await update.message.reply_text(welcome_text, parse_mode='Markdown')
-        await self.db.log_command(user.id, "start", "User started bot", True)
-    
-    @require_auth
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Help command handler"""
-        user = update.effective_user
-        logger.info(f"Help command from user {user.id} ({user.username})")
-        
-        help_text = """
-📚 **Available Commands:**
-
-🔧 **Core Commands:**
-/start - Welcome message
-/help - Show this help
-/status - Bot status
-/menu - Main menu
-
-💰 **Finance (Phase 2 - Coming Soon):**
-/add_expense - Add expense
-/add_income - Add income  
-/expenses_month - Monthly report
-
-⚙️ **Business (Phase 3 - Coming Soon):**
-/clients - Manage clients
-/monitor - System monitoring
-
-🧠 **AI Assistant (Phase 5 - Coming Soon):**
-Natural language commands will work here!
-        """
-        
-        await update.message.reply_text(help_text, parse_mode='Markdown')
-        await self.db.log_command(update.effective_user.id, "help", "Help requested", True)
-    
     @require_auth
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Status command handler"""
-        user = update.effective_user
-        logger.info(f"Status command from user {user.id} ({user.username})")
-        
-        try:
-            # Check database connection
-            async with self.db.pool.acquire() as conn:
-                await conn.fetchval('SELECT 1')
+        """Handle /status command"""
+        if not update.message or not update.effective_user:
+            return
             
-            db_status = "✅ Connected"
-        except Exception as e:
-            db_status = f"❌ Error: {str(e)[:50]}..."
+        start_time = datetime.now()
+        self.metrics.log_user_activity(update.effective_user.id)
+        
+        status = await self.get_system_status()
         
         status_text = f"""
-📊 **Bot Status Report**
+🖥️ **System Status**
 
-🤖 **Bot:** ✅ Online
-💾 **Database:** {db_status}
-🔐 **Auth:** ✅ Enabled (Whitelist: {len(Config.ALLOWED_USER_IDS)} users)
-🛡️ **2FA:** {"✅ Enabled" if Config.ENABLE_2FA else "❌ Disabled"}
+🕒 **System Info**
+• Platform: `{status['system']['platform']}`
+• Python: `{status['system']['python']}`
+• Uptime: `{status['system']['uptime']}`
+• Time: `{status['system']['timestamp']}`
 
-📈 **Current Phase:** 1 - Core Infrastructure
-🚀 **Next Phase:** 2 - Finance Management
+📊 **Resources**
+• CPU Usage: `{status['resources']['cpu']}`
+• Memory Usage: `{status['resources']['memory']}`
+• Disk Usage: `{status['resources']['disk']}`
 
-⏰ **Uptime:** Just started
-🏗️ **Environment:** Railway.app
-        """
-        
-        await update.message.reply_text(status_text, parse_mode='Markdown')
-        await self.db.log_command(update.effective_user.id, "status", "Status checked", True)
-    
-    @require_auth
-    async def main_menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Main menu with inline keyboard"""
-        user = update.effective_user
-        logger.info(f"Menu command from user {user.id} ({user.username})")
+⚡ **Performance**
+• Avg Response: `{status['performance']['avg_response']}`
+• Success Rate: `{status['performance']['success_rate']}`
+• Commands: `{status['performance']['commands_handled']}`
+• Active Users: `{status['performance']['active_users_24h']}`
+
+📡 **Modules**
+• Finance: {'✅' if status['modules']['finance'] else '❌'}
+• Business: {'✅' if status['modules']['business'] else '❌'}
+• Monitoring: {'✅' if status['modules']['monitoring'] else '❌'}
+• AI Assistant: {'✅' if status['modules']['ai'] else '❌'}
+
+🗄️ **Database**
+• Status: {'✅ Connected' if status['database'] else '❌ Disconnected'}
+"""
+        if status.get('last_error'):
+            status_text += f"\n⚠️ **Last Error**\n`{status['last_error']}`"
         
         keyboard = [
             [
-                InlineKeyboardButton("💰 Finances", callback_data="menu_finance"),
-                InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status"),
+                InlineKeyboardButton("📊 Details", callback_data="status_details")
             ],
             [
-                InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
-                InlineKeyboardButton("🧠 AI Assistant", callback_data="menu_ai")
-            ],
-            [
-                InlineKeyboardButton("ℹ️ Status", callback_data="menu_status"),
-                InlineKeyboardButton("❓ Help", callback_data="menu_help")
+                InlineKeyboardButton("📝 Logs", callback_data="view_logs"),
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "🎛️ **Main Menu** - Choose a category:",
+            status_text,
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
-        await self.db.log_command(update.effective_user.id, "menu", "Main menu opened", True)
-    
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard callbacks"""
-        query = update.callback_query
-        user_id = query.from_user.id
         
-        logger.info(f"Callback query from user {user_id}: {query.data}")
-        
-        # Check authorization
-        if user_id not in Config.ALLOWED_USER_IDS:
-            await query.answer("🚫 Access denied", show_alert=True)
+        end_time = datetime.now()
+        self.metrics.log_command((end_time - start_time).total_seconds())
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command"""
+        if not update.effective_user or not update.message:
             return
+            
+        user_id = update.effective_user.id
+        first_name = update.effective_user.first_name
         
-        await query.answer()  # Acknowledge the callback
+        start_time = datetime.now()
+        self.metrics.log_user_activity(user_id)
         
-        callback_data = query.data
+        if not await self.security.authenticate_user(user_id):
+            await update.message.reply_text(
+                "🚫 Sorry, you are not authorized to use this bot."
+            )
+            return
+                    welcome_msg = f"""
+🤖 **Welcome {first_name}!**
+
+I'm your personal assistant bot with advanced AI capabilities.
+
+🔥 **Core Features**:
+
+💰 **Finance Management**
+• Track expenses & income
+• OCR receipt processing
+• Financial reporting
+• Budget tracking
+
+⚙️ **Business Operations**
+• n8n workflow management
+• VPS monitoring
+• Docker container control
+• Client management
+
+📊 **System Monitoring**
+• Real-time metrics
+• Intelligent alerts
+• Health reporting
+• Log analysis
+
+🧠 **AI Assistant**
+• Natural language processing
+• Voice message handling
+• Context-aware responses
+• Multi-model support (GPT-4 & Claude)
+
+📈 **Business Intelligence**
+• Predictive analytics
+• Trend detection
+• Automated reporting
+• Data visualization
+
+Use /help for commands
+Use /status for system health
+"""
+        keyboard = [
+            [
+                InlineKeyboardButton("📚 Commands", callback_data="show_help"),
+                InlineKeyboardButton("📊 Status", callback_data="show_status")
+            ],
+            [
+                InlineKeyboardButton("💰 Finance", callback_data="menu_finance"),
+                InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
+            ],
+            [
+                InlineKeyboardButton("🤖 AI Assistant", callback_data="menu_ai"),
+                InlineKeyboardButton("📈 Analytics", callback_data="menu_bi")
+            ],
+            [
+                InlineKeyboardButton("⚙️ Settings", callback_data="show_settings")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        if callback_data == "menu_finance":
-            await query.edit_message_text(
-                "💰 **Finance Management**\n\n"
-                "Coming in Phase 2! Will include:\n"
-                "• Expense tracking\n"
-                "• Income management\n" 
-                "• OCR receipts\n"
-                "• Financial reports\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_business":
-            await query.edit_message_text(
-                "⚙️ **Business Workflows**\n\n"
-                "Coming in Phase 3! Will include:\n"
-                "• n8n client management\n"
-                "• VPS connections\n"
-                "• Docker monitoring\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_monitoring":
-            await query.edit_message_text(
-                "📊 **System Monitoring**\n\n"
-                "Coming in Phase 4! Will include:\n"
-                "• VPS metrics\n"
-                "• Alert system\n"
-                "• Health reports\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_ai":
-            await query.edit_message_text(
-                "🧠 **AI Assistant**\n\n"
-                "Coming in Phase 5! Will include:\n"
-                "• GPT-4 + Claude integration\n"
-                "• Natural language commands\n"
-                "• Voice transcription\n\n"
-                "Use /menu to go back.",
-                parse_mode='Markdown'
-            )
-        elif callback_data == "menu_status":
-            await self.status_command(query, context)
-        elif callback_data == "menu_help":
-            await self.help_command(query, context)
+        await update.message.reply_text(
+            welcome_msg,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
         
-        await self.db.log_command(user_id, f"callback_{callback_data}", "Menu callback", True)
+        end_time = datetime.now()
+        self.metrics.log_command((end_time - start_time).total_seconds())
     
     @require_auth
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages (for future AI integration)"""
-        message_text = update.message.text.lower()
-        user = update.effective_user
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        if not update.message or not update.effective_user:
+            return
+            
+        start_time = datetime.now()
+        self.metrics.log_user_activity(update.effective_user.id)
         
-        logger.info(f"Received message from {user.id} ({user.username}): {message_text}")
+        help_text = """
+📚 **Command Reference**
+
+🔧 **Core Commands**
+/start - Initialize bot
+/help - Show this help
+/status - System status
+/menu - Main menu
+/settings - Bot configuration
+
+💰 **Finance Management**
+/expense - Add expense
+/income - Add income
+/balance - Show balance
+/report - Generate report
+/budget - Budget status
+/receipt - Process receipt
+
+⚙️ **Business Operations**
+/client - Manage n8n clients
+/docker - Docker container status
+/vps - VPS monitoring
+/workflow - n8n workflow status
+/backup - Manage backups
+
+📊 **Monitoring**
+/metrics - System metrics
+/alerts - View active alerts
+/health - Health check
+/logs - System logs
+/incidents - Incident reports
+
+🧠 **AI Assistant**
+/ask - Ask AI assistant
+/voice - Voice message mode
+/clear - Clear AI context
+/mode - Switch AI model
+/learn - Train on new data
+
+📈 **Analytics**
+/analyze - Data analysis
+/forecast - Generate forecast
+/trends - Show trends
+/export - Export data
+/visualize - Create charts
+
+⚙️ **Settings**
+/notify - Alert settings
+/timezone - Set timezone
+/language - Change language
+/profile - User settings
+/security - Security options
+
+Need help? Just ask the AI assistant!
+Use: /ask help with [topic]
+"""
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_help"),
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
+            ],
+            [
+                InlineKeyboardButton("📚 Tutorial", callback_data="show_tutorial"),
+                InlineKeyboardButton("❓ FAQ", callback_data="show_faq")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Simple responses for Phase 1
-        if any(word in message_text for word in ['hello', 'hi', 'hey']):
-            logger.info(f"Sending greeting to {user.id}")
-            await update.message.reply_text(
-                "👋 Hello! I'm your Personal Bot Assistant.\n"
-                "Use /menu to see what I can do!"
+        await update.message.reply_text(
+            help_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        end_time = datetime.now()
+        self.metrics.log_command((end_time - start_time).total_seconds())
+            async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle button callbacks"""
+        if not update.callback_query or not update.effective_user:
+            return
+            
+        start_time = datetime.now()
+        self.metrics.log_user_activity(update.effective_user.id)
+        
+        query = update.callback_query
+        await query.answer()
+        
+        try:
+            if query.data == "refresh_status":
+                await self.status_command(update, context)
+            elif query.data == "show_help":
+                await self.help(update, context)
+            elif query.data == "main_menu":
+                await self.show_main_menu(update, context)
+            elif query.data.startswith("menu_"):
+                module = query.data.split("_")[1]
+                await self.show_module_menu(update, context, module)
+            elif query.data == "show_settings":
+                await self.show_settings(update, context)
+            elif query.data == "view_logs":
+                await self.show_logs(update, context)
+            elif query.data == "show_tutorial":
+                await self.show_tutorial(update, context)
+            elif query.data == "show_faq":
+                await self.show_faq(update, context)
+            
+            end_time = datetime.now()
+            self.metrics.log_command((end_time - start_time).total_seconds())
+            
+        except Exception as e:
+            logger.error(f"Error in button handler: {e}")
+            self.metrics.log_error(str(e))
+            await query.message.reply_text(
+                "⚠️ An error occurred processing your request. Please try again."
             )
-        elif any(word in message_text for word in ['status', 'health']):
-            logger.info(f"Sending status to {user.id}")
-            await self.status_command(update, context)
-        else:
-            logger.info(f"Sending default response to {user.id}")
-            await update.message.reply_text(
-                "🤔 I don't understand that yet.\n"
-                "In Phase 5, I'll have AI capabilities!\n"
-                "For now, use /help or /menu."
-            )
+    
+    async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show main menu"""
+        if not update.callback_query:
+            return
+            
+        keyboard = [
+            [
+                InlineKeyboardButton("💰 Finance", callback_data="menu_finance"),
+                InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
+            ],
+            [
+                InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
+                InlineKeyboardButton("🤖 AI", callback_data="menu_ai")
+            ],
+            [
+                InlineKeyboardButton("📈 Analytics", callback_data="menu_bi"),
+                InlineKeyboardButton("⚡ Quick Actions", callback_data="menu_quick")
+            ],
+            [
+                InlineKeyboardButton("⚙️ Settings", callback_data="show_settings"),
+                InlineKeyboardButton("❓ Help", callback_data="show_help")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await self.db.log_command(
-            update.effective_user.id, 
-            "message", 
-            f"Processed: {message_text[:100]}", 
-            True
+        await update.callback_query.edit_message_text(
+            "🏠 **Main Menu**\nSelect a module or action:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    async def show_module_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, module: str):
+        """Show specific module menu"""
+        if not update.callback_query:
+            return
+            
+        menus = {
+            "finance": self.finance.get_menu(),
+            "business": self.business.get_menu(),
+            "monitoring": self.monitoring.get_menu(),
+            "ai": self.ai.get_menu(),
+            "bi": self.business.get_analytics_menu(),
+            "quick": self.get_quick_actions_menu()
+        }
+        
+        menu = menus.get(module, {"text": "Menu not available", "keyboard": []})
+        
+        # Always add back button
+        if menu["keyboard"]:
+            menu["keyboard"].append([
+                InlineKeyboardButton("🔙 Back", callback_data="main_menu")
+            ])
+        
+        await update.callback_query.edit_message_text(
+            text=menu["text"],
+            reply_markup=InlineKeyboardMarkup(menu["keyboard"]),
+            parse_mode='Markdown'
+        )
+    
+    def get_quick_actions_menu(self) -> Dict[str, Any]:
+        """Get quick actions menu"""
+        return {
+            "text": "⚡ **Quick Actions**\nFrequently used commands:",
+            "keyboard": [
+                [
+                    InlineKeyboardButton("💰 Add Expense", callback_data="quick_expense"),
+                    InlineKeyboardButton("📊 Status", callback_data="quick_status")
+                ],
+                [
+                    InlineKeyboardButton("🤖 Ask AI", callback_data="quick_ai"),
+                    InlineKeyboardButton("📈 Today's Report", callback_data="quick_report")
+                ]
+            ]
+        }
+    
+    async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show settings menu"""
+        if not update.callback_query:
+            return
+            
+        keyboard = [
+            [
+                InlineKeyboardButton("🔔 Notifications", callback_data="settings_notifications"),
+                InlineKeyboardButton("🌍 Language", callback_data="settings_language")
+            ],
+            [
+                InlineKeyboardButton("🕒 Timezone", callback_data="settings_timezone"),
+                InlineKeyboardButton("🔐 Security", callback_data="settings_security")
+            ],
+            [
+                InlineKeyboardButton("⚙️ AI Settings", callback_data="settings_ai"),
+                InlineKeyboardButton("📊 Display", callback_data="settings_display")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back", callback_data="main_menu")
+            ]
+        ]
+        
+        await update.callback_query.edit_message_text(
+            "⚙️ **Settings**\nConfigure bot preferences:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+            async def show_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show recent system logs"""
+        if not update.callback_query:
+            return
+            
+        try:
+            # Get last 10 significant log entries
+            logs = await self.monitoring.get_recent_logs(limit=10)
+            
+            log_text = "📋 **Recent System Logs**\n\n"
+            for log in logs:
+                log_text += f"• {log['timestamp']}: {log['message']}\n"
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="view_logs"),
+                    InlineKeyboardButton("📥 Download", callback_data="download_logs")
+                ],
+                [
+                    InlineKeyboardButton("🔙 Back", callback_data="show_status")
+                ]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                log_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error showing logs: {e}")
+            self.metrics.log_error(str(e))
+            await update.callback_query.edit_message_text(
+                "⚠️ Error retrieving logs. Please try again.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="show_status")
+                ]])
+            )
+    
+    async def show_tutorial(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show interactive tutorial"""
+        if not update.callback_query:
+            return
+            
+        tutorials = {
+            "basic": "🔰 **Basic Usage**\nLearn core bot features...",
+            "finance": "💰 **Finance Module**\nManage expenses and income...",
+            "business": "⚙️ **Business Operations**\nHandle n8n and Docker...",
+            "ai": "🤖 **AI Assistant**\nInteract with AI features..."
+        }
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🔰 Basics", callback_data="tutorial_basic"),
+                InlineKeyboardButton("💰 Finance", callback_data="tutorial_finance")
+            ],
+            [
+                InlineKeyboardButton("⚙️ Business", callback_data="tutorial_business"),
+                InlineKeyboardButton("🤖 AI", callback_data="tutorial_ai")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back", callback_data="show_help")
+            ]
+        ]
+        
+        await update.callback_query.edit_message_text(
+            "📚 **Tutorial**\nSelect a topic to learn more:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    async def show_faq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show frequently asked questions"""
+        if not update.callback_query:
+            return
+            
+        faq_text = """
+❓ **Frequently Asked Questions**
+
+**Q: How do I start using the bot?**
+A: Use /start to begin and follow the interactive menu.
+
+**Q: How does the AI assistant work?**
+A: Use /ask followed by your question. The AI supports text and voice.
+
+**Q: How secure is my data?**
+A: All data is encrypted and stored securely. Only you can access it.
+
+**Q: Can I export my data?**
+A: Yes, use /export in any module to download your data.
+
+**Q: How do I set up alerts?**
+A: Use /settings → Notifications to configure alerts.
+"""
+        keyboard = [
+            [
+                InlineKeyboardButton("📚 Tutorial", callback_data="show_tutorial"),
+                InlineKeyboardButton("🆘 Support", callback_data="show_support")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back", callback_data="show_help")
+            ]
+        ]
+        
+        await update.callback_query.edit_message_text(
+            faq_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
         )
 
-# ==============================================================================
-# FASTAPI APPLICATION (Optional web endpoints)
-# ==============================================================================
-
-fastapi_app = FastAPI(title="Personal Bot Assistant API", version="1.0.0")
-
-fastapi_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@fastapi_app.get("/")
-async def root():
-    return {"message": "Personal Bot Assistant API - Phase 1", "status": "active"}
-
-@fastapi_app.get("/health")
-async def health_check():
-    try:
-        # Check database
-        async with db_manager.pool.acquire() as conn:
-            await conn.fetchval('SELECT 1')
-        db_healthy = True
-    except:
-        db_healthy = False
-    
-    return {
-        "status": "healthy" if db_healthy else "unhealthy",
-        "database": "connected" if db_healthy else "disconnected",
-        "phase": 1,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-
-# ==============================================================================
-# MAIN APPLICATION RUNNER
-# ==============================================================================
-
-# Global database manager
-db_manager = None
-
-async def init_bot():
-    """Initialize bot and database"""
-    global db_manager
-    
-    try:
-        # Initialize database
-        db_manager = DatabaseManager(Config.DATABASE_URL)
-        await db_manager.initialize()
-        
-        # Initialize bot
-        application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
-        bot = PersonalBotAssistant(db_manager)
-        bot.application = application
-        bot.setup_handlers()
-        
-        logger.info("Starting Personal Bot Assistant - Phase 1")
-        logger.info(f"Authorized users: {Config.ALLOWED_USER_IDS}")
-        
-        # Set bot commands
+    async def setup_commands(self):
+        """Setup bot commands for menu button"""
         commands = [
-            ("start", "Start the bot"),
-            ("help", "Show help message"),
-            ("menu", "Open main menu"),
-            ("status", "Check bot status")
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Show help message"),
+            BotCommand("status", "Show system status"),
+            BotCommand("menu", "Show main menu"),
+            BotCommand("ask", "Ask AI assistant"),
+            BotCommand("expense", "Add expense"),
+            BotCommand("income", "Add income"),
+            BotCommand("balance", "Show balance"),
+            BotCommand("client", "Manage clients"),
+            BotCommand("metrics", "Show metrics"),
+            BotCommand("settings", "Bot settings")
         ]
-        await bot.application.bot.set_my_commands(commands)
-        logger.info("Bot commands updated")
         
-        return bot
-        
-    except Exception as e:
-        logger.error(f"Initialization error: {e}")
-        if db_manager:
-            await db_manager.close()
-        raise
-
-async def run_bot():
-    """Run the bot with proper cleanup"""
-    bot = None
-    try:
-        bot = await init_bot()
-        if bot and bot.application:
-            logger.info("Starting bot polling...")
-            await bot.application.initialize()
-            await bot.application.start()
-            await bot.application.updater.start_polling()
+        await self.application.bot.set_my_commands(commands)
+        logger.info("Bot commands configured")
+            async def handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle errors in updates"""
+        try:
+            if update and update.effective_user:
+                user_id = update.effective_user.id
+                self.metrics.log_user_activity(user_id)
             
-            # Keep the bot running
-            while True:
-                try:
-                    await asyncio.sleep(1)
-                except asyncio.CancelledError:
-                    break
-                    
-    except Exception as e:
-        logger.error(f"Runtime error: {e}")
-    finally:
-        if bot and bot.application:
-            logger.info("Stopping bot...")
-            await bot.application.stop()
-            await bot.application.shutdown()
-        if db_manager:
-            await db_manager.close()
-            logger.info("Database connection closed")
-
-def main():
-    """Main application entry point"""
-    try:
-        asyncio.run(run_bot())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user!")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
+            error = context.error
+            logger.error(f"Update {update} caused error: {error}")
+            self.metrics.log_error(str(error))
+            
+            # Handle specific errors
+            if isinstance(error, AuthenticationError):
+                await self._handle_auth_error(update, error)
+            elif isinstance(error, DatabaseError):
+                await self._handle_db_error(update, error)
+            elif isinstance(error, BotError):
+                await self._handle_bot_error(update, error)
+            else:
+                await self._handle_generic_error(update, error)
+                
+        except Exception as e:
+            logger.error(f"Error in error handler: {e}")
+    
+    async def _handle_auth_error(self, update: Update, error: AuthenticationError):
+        """Handle authentication errors"""
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "🚫 Authentication failed. Please verify your access."
+            )
+    
+    async def _handle_db_error(self, update: Update, error: DatabaseError):
+        """Handle database errors"""
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Database operation failed. Your data is safe, please try again later."
+            )
+            
+        # Attempt database recovery
+        try:
+            await self.db.verify_connection()
+        except Exception as e:
+            logger.error(f"Database recovery failed: {e}")
+    
+    async def _handle_bot_error(self, update: Update, error: BotError):
+        """Handle bot-specific errors"""
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                f"⚠️ Operation failed: {str(error)}\nPlease try again or contact support."
+            )
+    
+    async def _handle_generic_error(self, update: Update, error: Exception):
+        """Handle unknown errors"""
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "❌ An unexpected error occurred. Our team has been notified."
+            )
+    
+    async def setup(self):
+        """Setup bot handlers and modules"""
+        try:
+            # Core handlers
+            self.application.add_handler(CommandHandler("start", self.start))
+            self.application.add_handler(CommandHandler("help", self.help))
+            self.application.add_handler(CommandHandler("status", self.status_command))
+            self.application.add_handler(CommandHandler("menu", self.show_main_menu))
+            self.application.add_handler(CallbackQueryHandler(self.button_handler))
+            
+            # Error handler
+            self.application.add_error_handler(self.handle_error)
+            
+            # Setup module handlers
+            await asyncio.gather(
+                self.finance.setup_handlers(self.application),
+                self.business.setup_handlers(self.application),
+                self.monitoring.setup_handlers(self.application),
+                self.ai.setup_handlers(self.application)
+            )
+            
+            # Setup commands
+            await self.setup_commands()
+            
+            # Initialize database
+            await self.db.initialize()
+            
+            # Verify all connections
+            await self._verify_connections()
+            
+            logger.info("Bot setup completed successfully")
+        except Exception as e:
+            logger.error(f"Error during bot setup: {e}")
+            raise
+    
+    async def _verify_connections(self):
+        """Verify all external connections"""
+        try:
+            # Check database
+            if not await self.db.check_connection():
+                raise DatabaseError("Database connection failed")
+            
+            # Check AI services
+            if not await self.ai.check_services():
+                logger.warning("AI services partially unavailable")
+            
+            # Check monitoring
+            if not await self.monitoring.check_services():
+                logger.warning("Monitoring services partially unavailable")
+            
+            logger.info("All connections verified")
+        except Exception as e:
+            logger.error(f"Connection verification failed: {e}")
+            raise
+    
+    async def run(self):
+        """Run the bot"""
+        try:
+            logger.info("Starting bot...")
+            
+            # Setup
+            await self.setup()
+            
+            # Initialize application
+            await self.application.initialize()
+            
+            # Start application
+            await self.application.start()
+            
+            # Run polling
+            await self.application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+            
+            logger.info("Bot is running")
+        except Exception as e:
+            logger.error(f"Critical error running bot: {e}")
+            self.metrics.log_error(str(e))
+            raise
+        finally:
+            # Ensure clean shutdown
+            await self.application.stop()
 
 if __name__ == "__main__":
-    main()
+    try:
+        # Set higher recursion limit for async operations
+        sys.setrecursionlimit(10000)
+        
+        # Create and run bot
+        bot = Bot()
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}")
+        sys.exit(1)
