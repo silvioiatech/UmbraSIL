@@ -5,3 +5,24 @@ buildCommand = "pip install -r requirements.txt"
 [deploy]
 startCommand = "python main.py"
 restartPolicyType = "ON_FAILURE"
+healthcheckPath = "/"
+healthcheckTimeout = 300
+healthcheckInterval = 60
+
+[provision]
+plan = "standard"
+
+[metrics]
+enabled = true
+path = "/metrics"
+port = 8000
+
+[[services]]
+name = "bot"
+team = "personal"
+plan = "starter"
+resources = ["postgresql"]
+
+[services.envs]
+PYTHON_VERSION = "3.11"
+PYTHONUNBUFFERED = "1"
