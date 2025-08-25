@@ -22,5 +22,9 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONASYNCIODEBUG=1
 
+# Use tini as init system
+RUN apt-get update && apt-get install -y tini
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
 # Command to run the application
 CMD ["python", "main.py"]
