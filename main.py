@@ -6,11 +6,11 @@ import logging
 import asyncio
 import asyncpg
 import uvicorn
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict
 from datetime import datetime, timezone
 
 # FastAPI for potential web endpoints
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Telegram Bot
@@ -18,8 +18,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # Security & Auth
-import hashlib
-import hmac
 from functools import wraps
 
 # ==============================================================================
@@ -218,16 +216,18 @@ def require_auth(func):
             target = update.effective_message
             if target:
                 await target.reply_text("🚫 Access denied. You are not authorized to use this bot.")
-            await db_manager.log_command(
-                user_id, func.__name__, "Unauthorized access attempt", False, "User not in whitelist"
-            )
+            if db_manager:
+                await db_manager.log_command(
+                    user_id, func.__name__, "Unauthorized access attempt", False, "User not in whitelist"
+                )
             return
         
         # Update user info
         user = update.effective_user
-        await db_manager.create_or_update_user(
-            user.id, user.username, user.first_name, user.last_name
-        )
+        if db_manager:
+            await db_manager.create_or_update_user(
+                user.id, user.username, user.first_name, user.last_name
+            )
         
         return await func(update, context)
     
@@ -319,7 +319,6 @@ Natural language commands will work here!
             # Check database connection
             async with self.db.pool.acquire() as conn:
                 await conn.fetchval('SELECT 1')
-            
             db_status = "✅ Connected"
         except Exception as e:
             db_status = f"❌ Error: {str(e)[:50]}..."
@@ -379,7 +378,6 @@ Natural language commands will work here!
             return
         
         await query.answer()  # Acknowledge the callback
-        
         callback_data = query.data
         
         if callback_data == "menu_finance":
@@ -520,7 +518,6 @@ async def root():
 @fastapi_app.get("/health")
 async def health_check():
     try:
-        # Check database if available
         if db_manager and db_manager.pool:
             async with db_manager.pool.acquire() as conn:
                 await conn.fetchval('SELECT 1')
@@ -552,11 +549,9 @@ async def main():
     if not Config.TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is required")
         return
-    
     if not Config.DATABASE_URL:
         logger.error("DATABASE_URL environment variable is required")
         return
-    
     if not Config.ALLOWED_USER_IDS:
         logger.error("ALLOWED_USER_IDS environment variable is required")
         return
@@ -611,85 +606,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-# ==============================================================================
-# REQUIREMENTS.txt (for Railway deployment)
-# ==============================================================================
-
-"""
-# Add this to requirements.txt:
-
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-telegram-bot==20.7
-asyncpg==0.29.0
-python-dotenv==1.0.0
-"""
-
-# ==============================================================================
-# RAILWAY DEPLOYMENT INSTRUCTIONS
-# ==============================================================================
-
-"""
-🚀 RAILWAY DEPLOYMENT STEPS:
-
-1. **Create Railway Project:**
-   - Connect your GitHub repo
-   - Enable auto-deploy from main branch
-
-2. **Add PostgreSQL Database:**
-   - Go to your project dashboard
-   - Click "New" → "Database" → "PostgreSQL"
-   - Railway will provide DATABASE_URL automatically
-
-3. **Set Environment Variables:**
-   - TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-   - ALLOWED_USER_IDS=123456789,987654321  (comma-separated)
-   - SECRET_KEY=your-super-secret-key-here
-   - ENABLE_2FA=false  (optional)
-   - LOG_LEVEL=INFO
-   - PORT=8000
-
-4. **Deploy:**
-   - Push to GitHub
-   - Railway will auto-deploy
-   - Check logs for any issues
-
-5. **Test:**
-   - Start your bot with /start
-   - Try /menu and /status commands
-   - Verify database connectivity
-
-🔒 SECURITY CHECKLIST:
-- ✅ User ID whitelist implemented
-- ✅ Environment variables secured
-- ✅ Database connection pooling
-- ✅ Command logging for monitoring
-- ✅ Error handling and validation
-
-📝 NEXT STEPS (Phase 2):
-- Add expense/income CRUD operations
-- Integrate Google Vision API for OCR
-- Create financial reporting with matplotlib
-- Add CSV export functionality
-"""
-
-# requirements.txt
-# Ultra-Minimal Requirements - Guaranteed Railway Success
-# Start with just the absolute essentials
-
-# Core Telegram Bot (REQUIRED)
-python-telegram-bot==20.7
-
-# Database
-asyncpg==0.29.0
-
-# Environment variables
-python-dotenv==1.0.0
-
-# Web framework (for health checks)
-fastapi==0.104.1
-uvicorn==0.24.0
-
-# That's it! Just 5 packages to start.
-# Once this works, we'll add more features gradually.
