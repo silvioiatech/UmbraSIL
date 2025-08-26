@@ -514,11 +514,6 @@ Use the interactive menu for easier navigation!
                         InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
                     ]])
                 )
-            
-            if update and update.effective_message:
-                await update.effective_message.reply_text(
-                    "⚠️ An error occurred. Please try again."
-                )
                 
         except Exception as e:
             logger.error(f"Button handler error: {e}")
@@ -770,23 +765,8 @@ All systems operational!
             except Exception as e:
                 logger.error(f"Error during shutdown: {e}")
 
-def main():
-    """Main function to run the bot"""
-    try:
-        # Set higher recursion limit for async operations
-        sys.setrecursionlimit(10000)
-        
-        # Create and run bot
-        bot = Bot()
-        asyncio.run(bot.run())
-        
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.critical(f"Fatal error: {e}")
-        sys.exit(1)
-
 async def main():
+    """Main async function to run the bot"""
     try:
         sys.setrecursionlimit(10000)
         bot = Bot()
