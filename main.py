@@ -361,30 +361,32 @@ class UmbraSILBot:
         self.metrics.log_user_activity(user.id)
         
         welcome_text = f"""
-🤖 **Welcome {user.first_name}!**
+🤖 **Welcome {user.first_name}! I'm Your AI Agent**
 
-I'm UmbraSIL, your personal assistant bot with comprehensive business management capabilities.
+I'm UmbraSIL's intelligent assistant. Just **talk to me naturally** and I'll help you manage your VPS!
 
-🔥 **Core Features**:
-💰 **Finance Management** - Track expenses & income
-⚙️ **Business Operations** - Manage workflows & systems  
-📊 **System Monitoring** - Real-time health & alerts
-🤖 **AI Assistant** - Natural language processing
+🚀 **Try saying:**
+• "check system status"
+• "show disk space"
+• "restart nginx"
+• "list docker containers"
+• "what's the memory usage"
 
-Use the buttons below to get started!
+Or use any shell command like `ls -la` or `ps aux`
+
+💬 **Just start chatting with me!**
 """
         keyboard = [
             [
-                InlineKeyboardButton("📚 Commands", callback_data="show_help"),
-                InlineKeyboardButton("📊 Status", callback_data="show_status")
+                InlineKeyboardButton("🤖 What can you do?", callback_data="show_help"),
+                InlineKeyboardButton("📊 System Status", callback_data="show_status")
             ],
             [
-                InlineKeyboardButton("💰 Finance", callback_data="menu_finance"),
-                InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
+                InlineKeyboardButton("🖥️ VPS Control Panel", callback_data="vps_control"),
+                InlineKeyboardButton("🐳 Docker Status", callback_data="docker_management")
             ],
             [
-                InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
-                InlineKeyboardButton("🤖 AI Assistant", callback_data="menu_ai")
+                InlineKeyboardButton("📈 Traditional Menu", callback_data="traditional_menu")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -507,24 +509,165 @@ Full access to your VPS management:
         )
 
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages for command execution"""
+        """Handle text messages - AI Agent is the primary interface"""
         if not update.message or not update.message.text:
             return
             
-        # Check if we're expecting a command
+        user_text = update.message.text.strip()
+        
+        # Check if we're expecting a command (VPS command execution)
         if context.user_data.get('expecting_command'):
-            command = update.message.text.strip()
-            
-            # Clear the flag
             context.user_data['expecting_command'] = False
-            
-            # Execute the command
-            await self.execute_vps_command(update, context, command)
-        else:
-            # Regular text message - could be used for AI chat later
-            await update.message.reply_text(
-                "💡 Use /menu to access bot features or send commands via VPS Control Panel."
+            await self.execute_vps_command(update, context, user_text)
+            return
+        
+        # Otherwise, let the AI Agent handle the message
+        await self.ai_agent_process(update, context, user_text)
+    
+    async def ai_agent_process(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
+        """AI Agent processes user input and delegates to appropriate modules"""
+        try:
+            # Show thinking message
+            thinking_msg = await update.message.reply_text(
+                "🤖 **AI Agent Processing...**\n\n🧠 Analyzing your request...",
+                parse_mode='Markdown'
             )
+            
+            # Analyze user intent and delegate
+            intent_result = await self.analyze_user_intent(user_message)
+            
+            # Execute the appropriate action based on intent
+            if intent_result['action'] == 'vps_command':
+                await thinking_msg.edit_text(
+                    f"🤖 **AI Agent**\n\n📝 Executing VPS command: `{intent_result['command']}`\n\n⏳ Please wait...",
+                    parse_mode='Markdown'
+                )
+                result = await self.vps_monitor.execute_command(intent_result['command'])
+                await self.format_command_response(thinking_msg, intent_result['command'], result)
+                
+            elif intent_result['action'] == 'vps_status':
+                await thinking_msg.edit_text(
+                    "🤖 **AI Agent**\n\n📊 Getting VPS system status...",
+                    parse_mode='Markdown'
+                )
+                await self.show_ai_vps_status(thinking_msg)
+                
+            elif intent_result['action'] == 'docker_status':
+                await thinking_msg.edit_text(
+                    "🤖 **AI Agent**\n\n🐳 Checking Docker containers...",
+                    parse_mode='Markdown'
+                )
+                result = await self.vps_monitor.get_docker_status()
+                await self.format_docker_response(thinking_msg, result)
+                
+            elif intent_result['action'] == 'file_operation':
+                await thinking_msg.edit_text(
+                    f"🤖 **AI Agent**\n\n📁 {intent_result['description']}...",
+                    parse_mode='Markdown'
+                )
+                await self.handle_file_operation(thinking_msg, intent_result)
+                
+            elif intent_result['action'] == 'help':
+                await self.show_ai_help(thinking_msg)
+                
+            elif intent_result['action'] == 'conversation':
+                # General AI conversation
+                ai_response = await self.get_ai_response(user_message)
+                await thinking_msg.edit_text(
+                    f"🤖 **AI Agent Response**\n\n{ai_response}",
+                    parse_mode='Markdown'
+                )
+            else:
+                # Fallback response
+                await thinking_msg.edit_text(
+                    f"🤖 **AI Agent**\n\nI understand you said: \"{user_message}\"\n\nI can help with:\n• VPS commands (\"check disk space\", \"restart nginx\")\n• System monitoring (\"show system status\")\n• Docker management (\"list containers\")\n• File operations (\"show files in /var/www\")\n\nWhat would you like me to do?",
+                    parse_mode='Markdown'
+                )
+                
+        except Exception as e:
+            logger.error(f"AI Agent error: {e}")
+            await update.message.reply_text(
+                f"🤖 **AI Agent Error**\n\n❌ Sorry, I encountered an error: {str(e)}",
+                parse_mode='Markdown'
+            )
+    
+    async def analyze_user_intent(self, user_message: str) -> dict:
+        """Analyze user intent and return action to take"""
+        message_lower = user_message.lower()
+        
+        # VPS Command patterns
+        command_patterns = {
+            'disk space': 'df -h',
+            'disk usage': 'df -h',
+            'free space': 'df -h',
+            'memory usage': 'free -h',
+            'ram usage': 'free -h',
+            'cpu usage': 'top -bn1 | head -20',
+            'processes': 'ps aux --sort=-%cpu | head -15',
+            'uptime': 'uptime',
+            'who is logged': 'who',
+            'network': 'ss -tuln | head -20',
+            'restart nginx': 'sudo systemctl restart nginx',
+            'restart apache': 'sudo systemctl restart apache2',
+            'nginx status': 'systemctl status nginx',
+            'apache status': 'systemctl status apache2',
+        }
+        
+        # Check for direct command patterns
+        for pattern, command in command_patterns.items():
+            if pattern in message_lower:
+                return {
+                    'action': 'vps_command',
+                    'command': command,
+                    'pattern': pattern
+                }
+        
+        # Check for system status requests
+        status_keywords = ['status', 'health', 'system', 'server', 'vps']
+        if any(keyword in message_lower for keyword in status_keywords):
+            return {'action': 'vps_status'}
+        
+        # Check for Docker requests
+        docker_keywords = ['docker', 'container', 'containers']
+        if any(keyword in message_lower for keyword in docker_keywords):
+            return {'action': 'docker_status'}
+        
+        # Check for file operations
+        file_keywords = ['file', 'files', 'directory', 'folder', 'ls', 'list']
+        if any(keyword in message_lower for keyword in file_keywords):
+            # Extract path if mentioned
+            path = '~'  # default
+            if '/var/' in message_lower:
+                path = '/var/www'
+            elif '/home/' in message_lower:
+                path = '/home'
+            elif '/etc/' in message_lower:
+                path = '/etc'
+            
+            return {
+                'action': 'file_operation',
+                'operation': 'list',
+                'path': path,
+                'description': f'Listing files in {path}'
+            }
+        
+        # Check for help requests
+        help_keywords = ['help', 'what can you do', 'commands', 'how']
+        if any(keyword in message_lower for keyword in help_keywords):
+            return {'action': 'help'}
+        
+        # If starts with a shell command, execute it directly
+        shell_commands = ['ls', 'cat', 'grep', 'find', 'sudo', 'systemctl', 'docker', 'ps', 'top', 'htop']
+        first_word = message_lower.split()[0] if message_lower.split() else ''
+        if first_word in shell_commands:
+            return {
+                'action': 'vps_command',
+                'command': user_message,
+                'pattern': 'direct_command'
+            }
+        
+        # Default to conversation
+        return {'action': 'conversation'}
     
     async def execute_vps_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, command: str):
         """Execute command on VPS and show result"""
@@ -600,6 +743,304 @@ Full access to your VPS management:
                 f"❌ **Error executing command**\n\n{str(e)}",
                 parse_mode='Markdown'
             )
+    
+    async def format_command_response(self, message, command: str, result: dict):
+        """Format command execution response for AI Agent"""
+        try:
+            if result["success"]:
+                output = result["output"] if result["output"] else "(No output)"
+                if len(output) > 3000:
+                    output = output[:3000] + "\n\n... (truncated)"
+                
+                response_text = f"""
+🤖 **AI Agent - Command Executed**
+
+✅ Successfully ran: `{command}`
+
+📋 **Result**:
+```
+{output}
+```
+
+🔄 **Time**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                error = result["error"] if result["error"] else "Unknown error"
+                if len(error) > 3000:
+                    error = error[:3000] + "\n\n... (truncated)"
+                
+                response_text = f"""
+🤖 **AI Agent - Command Failed**
+
+❌ Failed to run: `{command}`
+
+🚫 **Error**:
+```
+{error}
+```
+
+🔄 **Time**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("💬 Ask AI Another Question", callback_data="ai_chat"),
+                    InlineKeyboardButton("🖥️ VPS Control", callback_data="vps_control")
+                ]
+            ]
+            
+            await message.edit_text(
+                response_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"Error formatting command response: {e}")
+    
+    async def show_ai_vps_status(self, message):
+        """Show VPS status via AI Agent"""
+        try:
+            vps_stats = await self.vps_monitor.get_system_stats()
+            
+            if not vps_stats or not vps_stats.get("connected"):
+                error_msg = vps_stats.get("error", "Connection failed") if vps_stats else "VPS not configured"
+                status_text = f"""
+🤖 **AI Agent - VPS Status**
+
+🚨 **Connection Issue**: {error_msg}
+
+🔧 I can help you troubleshoot VPS connection issues. Just ask!
+"""
+            else:
+                cpu = vps_stats["cpu_percent"]
+                memory = vps_stats["memory_percent"]
+                disk = vps_stats["disk_percent"]
+                
+                status_emoji = "✅"
+                if cpu > 80 or memory > 80 or disk > 90:
+                    status_emoji = "⚠️"
+                if cpu > 95 or memory > 95 or disk > 95:
+                    status_emoji = "🚨"
+                
+                status_text = f"""
+🤖 **AI Agent - VPS Status**
+
+{status_emoji} **Overall Health**: {'Healthy' if status_emoji == '✅' else 'Needs Attention' if status_emoji == '⚠️' else 'Critical'}
+
+📊 **Resource Usage**:
+• CPU: {cpu:.1f}%
+• Memory: {memory:.1f}% ({vps_stats['memory_used_gb']:.1f}GB / {vps_stats['memory_total_gb']:.1f}GB)
+• Disk: {disk:.1f}%
+
+⏰ **Uptime**: {vps_stats['uptime']}
+🌐 **Host**: {self.vps_monitor.host}
+
+💬 Ask me anything about your VPS!
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh Status", callback_data="ai_vps_refresh"),
+                    InlineKeyboardButton("📊 More Details", callback_data="health_check")
+                ]
+            ]
+            
+            await message.edit_text(
+                status_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"AI VPS status error: {e}")
+            await message.edit_text(
+                f"🤖 **AI Agent Error**\n\n❌ Cannot get VPS status: {str(e)}"
+            )
+    
+    async def format_docker_response(self, message, result: dict):
+        """Format Docker status response for AI Agent"""
+        try:
+            if result["success"]:
+                output = result["output"][:2500]  # Limit for readability
+                response_text = f"""
+🤖 **AI Agent - Docker Status**
+
+🐳 **Container Overview**:
+```
+{output}
+```
+
+💬 Need to manage containers? Just ask me!
+Examples: "restart container X", "stop all containers"
+"""
+            else:
+                response_text = f"""
+🤖 **AI Agent - Docker Status**
+
+❌ **Issue**: {result['error']}
+
+🔧 **Possible Solutions**:
+• Docker might not be installed
+• Docker service might be stopped
+• Permission issues
+
+💬 Ask me to check or fix Docker issues!
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh Docker", callback_data="ai_docker_refresh"),
+                    InlineKeyboardButton("🐳 Docker Control", callback_data="docker_management")
+                ]
+            ]
+            
+            await message.edit_text(
+                response_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"Docker response formatting error: {e}")
+    
+    async def handle_file_operation(self, message, intent_result: dict):
+        """Handle file operations via AI Agent"""
+        try:
+            path = intent_result['path']
+            result = await self.vps_monitor.get_directory_listing(path)
+            
+            if result["success"]:
+                output = result["output"][:2500]
+                response_text = f"""
+🤖 **AI Agent - File Listing**
+
+📂 **Directory**: `{path}`
+
+```
+{output}
+```
+
+💬 Need to read a file or navigate? Just tell me!
+Examples: "read /etc/nginx.conf", "show files in /var/log"
+"""
+            else:
+                response_text = f"""
+🤖 **AI Agent - File Operation Failed**
+
+❌ **Path**: `{path}`
+**Error**: {result['error']}
+
+💬 Try a different path or ask me for help!
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("📁 File Manager", callback_data="file_manager"),
+                    InlineKeyboardButton("💬 Ask AI", callback_data="ai_chat")
+                ]
+            ]
+            
+            await message.edit_text(
+                response_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"File operation error: {e}")
+    
+    async def show_ai_help(self, message):
+        """Show AI Agent help"""
+        help_text = f"""
+🤖 **AI Agent - I'm Your VPS Assistant!**
+
+🚀 **Just talk to me naturally! I understand:**
+
+💻 **System Commands**:
+• "check disk space" → Shows disk usage
+• "what's the memory usage" → Shows RAM info
+• "show running processes" → Lists processes
+• "restart nginx" → Restarts nginx service
+
+📊 **System Info**:
+• "system status" → Full health overview
+• "server health" → Resource monitoring
+• "uptime" → How long server is running
+
+🐳 **Docker Management**:
+• "docker status" → List containers
+• "containers" → Show running containers
+
+📁 **File Operations**:
+• "list files in /var/www" → Browse directory
+• "show files" → List current directory
+
+⚙️ **Direct Commands**:
+• Just type any shell command: `ls -la`, `ps aux`, `df -h`
+
+💬 **Or just ask me anything about your VPS!**
+
+Host: `{self.vps_monitor.host or 'Not configured'}`
+"""
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🖥️ VPS Control Panel", callback_data="vps_control"),
+                InlineKeyboardButton("📊 System Status", callback_data="show_status")
+            ]
+        ]
+        
+        await message.edit_text(
+            help_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    async def get_ai_response(self, user_message: str) -> str:
+        """Generate AI response for general conversation"""
+        # Simple responses for now - can be enhanced with actual AI API later
+        responses = {
+            'hello': 'Hello! I\'m your VPS AI Agent. How can I help you manage your server today?',
+            'hi': 'Hi there! Ready to help with your VPS management. What do you need?',
+            'thanks': 'You\'re welcome! Let me know if you need anything else with your VPS.',
+            'good': 'Glad to hear that! Is there anything else I can help you with?',
+        }
+        
+        message_lower = user_message.lower()
+        for key, response in responses.items():
+            if key in message_lower:
+                return response
+        
+        return f'I understand you said: "{user_message}"\n\nI\'m specialized in VPS management. Try asking me about system status, running commands, or checking Docker containers!'
+    
+    async def show_traditional_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show traditional button-based menu"""
+        menu_text = """
+📈 **Traditional Menu**
+
+Classic button-based navigation:
+"""
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("💰 Finance", callback_data="menu_finance"),
+                InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
+            ],
+            [
+                InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
+                InlineKeyboardButton("🤖 AI Assistant", callback_data="menu_ai")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back to AI Agent", callback_data="main_menu")
+            ]
+        ]
+        
+        await update.callback_query.edit_message_text(
+            menu_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     
     async def show_docker_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show Docker containers status"""
@@ -1055,6 +1496,23 @@ Contact the developer or check documentation.
                 await self.prompt_command_execution(update, context)
             elif callback_data == "network_info":
                 await self.show_network_info(update, context)
+            elif callback_data == "ai_vps_refresh":
+                # AI Agent refresh VPS status
+                thinking_msg = await update.callback_query.message.reply_text(
+                    "🤖 **AI Agent**\n\n🔄 Refreshing VPS status...",
+                    parse_mode='Markdown'
+                )
+                await self.show_ai_vps_status(thinking_msg)
+            elif callback_data == "ai_docker_refresh":
+                # AI Agent refresh Docker status
+                thinking_msg = await update.callback_query.message.reply_text(
+                    "🤖 **AI Agent**\n\n🐳 Refreshing Docker status...",
+                    parse_mode='Markdown'
+                )
+                result = await self.vps_monitor.get_docker_status()
+                await self.format_docker_response(thinking_msg, result)
+            elif callback_data == "traditional_menu":
+                await self.show_traditional_menu(update, context)
             
             # Monitoring features
             elif callback_data in ["view_alerts", "view_logs"]:
