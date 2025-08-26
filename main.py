@@ -135,7 +135,7 @@ class Bot:
         except Exception as e:
             logger.error(f"Failed to initialize bot: {e}")
             raise
-                async def get_system_status(self) -> Dict[str, Any]:
+    async def get_system_status(self) -> Dict[str, Any]:
         """Get detailed system status"""
         try:
             cpu_percent = psutil.cpu_percent()
@@ -192,30 +192,30 @@ class Bot:
 🖥️ **System Status**
 
 🕒 **System Info**
-• Platform: `{status['system']['platform']}`
-• Python: `{status['system']['python']}`
-• Uptime: `{status['system']['uptime']}`
-• Time: `{status['system']['timestamp']}`
+# • Platform: `{status['system']['platform']}`
+# • Python: `{status['system']['python']}`
+# • Uptime: `{status['system']['uptime']}`
+# • Time: `{status['system']['timestamp']}`
 
-📊 **Resources**
-• CPU Usage: `{status['resources']['cpu']}`
-• Memory Usage: `{status['resources']['memory']}`
-• Disk Usage: `{status['resources']['disk']}`
+# 📊 **Resources**
+# • CPU Usage: `{status['resources']['cpu']}`
+# • Memory Usage: `{status['resources']['memory']}`
+# • Disk Usage: `{status['resources']['disk']}`
 
 ⚡ **Performance**
-• Avg Response: `{status['performance']['avg_response']}`
-• Success Rate: `{status['performance']['success_rate']}`
-• Commands: `{status['performance']['commands_handled']}`
-• Active Users: `{status['performance']['active_users_24h']}`
+# • Avg Response: `{status['performance']['avg_response']}`
+# • Success Rate: `{status['performance']['success_rate']}`
+# • Commands: `{status['performance']['commands_handled']}`
+# • Active Users: `{status['performance']['active_users_24h']}`
 
 📡 **Modules**
-• Finance: {'✅' if status['modules']['finance'] else '❌'}
-• Business: {'✅' if status['modules']['business'] else '❌'}
-• Monitoring: {'✅' if status['modules']['monitoring'] else '❌'}
-• AI Assistant: {'✅' if status['modules']['ai'] else '❌'}
+# • Finance: {'✅' if status['modules']['finance'] else '❌'}
+# • Business: {'✅' if status['modules']['business'] else '❌'}
+# • Monitoring: {'✅' if status['modules']['monitoring'] else '❌'}
+# • AI Assistant: {'✅' if status['modules']['ai'] else '❌'}
 
 🗄️ **Database**
-• Status: {'✅ Connected' if status['database'] else '❌ Disconnected'}
+# • Status: {'✅ Connected' if status['database'] else '❌ Disconnected'}
 """
         if status.get('last_error'):
             status_text += f"\n⚠️ **Last Error**\n`{status['last_error']}`"
@@ -257,46 +257,38 @@ class Bot:
                 "🚫 Sorry, you are not authorized to use this bot."
             )
             return
-                    welcome_msg = f"""
-🤖 **Welcome {first_name}!**
-
-I'm your personal assistant bot with advanced AI capabilities.
-
-🔥 **Core Features**:
-
-💰 **Finance Management**
-• Track expenses & income
-• OCR receipt processing
-• Financial reporting
-• Budget tracking
-
-⚙️ **Business Operations**
-• n8n workflow management
-• VPS monitoring
-• Docker container control
-• Client management
-
-📊 **System Monitoring**
-• Real-time metrics
-• Intelligent alerts
-• Health reporting
-• Log analysis
-
-🧠 **AI Assistant**
-• Natural language processing
-• Voice message handling
-• Context-aware responses
-• Multi-model support (GPT-4 & Claude)
-
-📈 **Business Intelligence**
-• Predictive analytics
-• Trend detection
-• Automated reporting
-• Data visualization
-
-Use /help for commands
-Use /status for system health
-"""
+        welcome_msg = f"""
+        🤖 **Welcome {first_name}!**
+                I'm your personal assistant bot with advanced AI capabilities.
+                🔥 **Core Features**:
+                💰 **Finance Management**
+        # • Track expenses & income
+        # • OCR receipt processing
+        # • Financial reporting
+        # • Budget tracking
+                ⚙️ **Business Operations**
+        # • n8n workflow management
+        # • VPS monitoring
+        # • Docker container control
+        # • Client management
+                # 📊 **System Monitoring**
+        # • Real-time metrics
+        # • Intelligent alerts
+        # • Health reporting
+        # • Log analysis
+                # 🧠 **AI Assistant**
+        # • Natural language processing
+        # • Voice message handling
+        # • Context-aware responses
+        # • Multi-model support (GPT-4 & Claude)
+                📈 **Business Intelligence**
+        # • Predictive analytics
+        # • Trend detection
+        # • Automated reporting
+        # • Data visualization
+                Use /help for commands
+        Use /status for system health
+        """
         keyboard = [
             [
                 InlineKeyboardButton("📚 Commands", callback_data="show_help"),
@@ -359,14 +351,14 @@ Use /status for system health
 /workflow - n8n workflow status
 /backup - Manage backups
 
-📊 **Monitoring**
+# 📊 **Monitoring**
 /metrics - System metrics
 /alerts - View active alerts
 /health - Health check
 /logs - System logs
 /incidents - Incident reports
 
-🧠 **AI Assistant**
+# 🧠 **AI Assistant**
 /ask - Ask AI assistant
 /voice - Voice message mode
 /clear - Clear AI context
@@ -410,7 +402,7 @@ Use: /ask help with [topic]
         
         end_time = datetime.now()
         self.metrics.log_command((end_time - start_time).total_seconds())
-            async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button callbacks"""
         if not update.callback_query or not update.effective_user:
             return
@@ -553,7 +545,7 @@ Use: /ask help with [topic]
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
-            async def show_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def show_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show recent system logs"""
         if not update.callback_query:
             return
@@ -799,7 +791,7 @@ A: Use /settings → Notifications to configure alerts.
         
         await self.application.bot.set_my_commands(commands)
         logger.info("Bot commands configured")
-            async def handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors in updates"""
         try:
             if update and update.effective_user:
