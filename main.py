@@ -5,21 +5,8 @@ import asyncio
 import psutil
 import platform
 from aiohttp import web
+import json
 
-# Add these to the Bot class initialization
-async def health_check(self, request):
-    """Handle health check requests"""
-    try:
-        # Verify critical services
-        db_status = await self.db.check_connection()
-        return web.Response(
-            text="OK",
-            status=200 if db_status else 503
-        )
-    except Exception:
-        return web.Response(text="Service Unavailable", status=503)
-
-async def setup_healthcheck(self):
     """Setup health check server"""
     app = web.Application()
     app.router.add_get('/', self.health_check)
@@ -858,4 +845,62 @@ if __name__ == "__main__":
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.critical(f"Fatal error: {e}")
-        sys.exit(1)
+        sys.exit(1
+    async def health_check(self, request):
+        """Handle health check requests"""
+        try:
+            status_data = {
+                "status": "healthy",
+                "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                "version": "1.0.0",
+                "uptime": str(self.metrics.get_uptime() if hasattr(self, "metrics") else ""),
+                "services": {
+                    "database": await self.db.check_connection() if hasattr(self, "db") else False,
+                    "finance": self.finance.is_operational() if hasattr(self, "finance") else False,
+                    "business": self.business.is_operational() if hasattr(self, "business") else False,
+                    "monitoring": self.monitoring.is_operational() if hasattr(self, "monitoring") else False,
+                    "ai": self.ai.is_operational() if hasattr(self, "ai") else False
+                }
+            }
+            is_healthy = all([
+                status_data["services"]["database"],
+                status_data["services"]["monitoring"]
+            ])
+            return web.Response(
+                text=json.dumps(status_data),
+                content_type='application/json',
+                status=200 if is_healthy else 503
+            )
+        except Exception as e:
+            if "logger" in globals():
+                logger.error(f"Health check failed: {e}")
+            return web.Response(
+                text=json.dumps({
+                    "status": "unhealthy",
+                    "error": str(e),
+                    "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                }),
+                content_type='application/json',
+                status=503
+            )
+
+    async def setup_healthcheck(self):
+        """Setup health check server"""
+        try:
+            app = web.Application()
+            app.router.add_get('/', self.health_check)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(
+                runner, 
+                host='0.0.0.0', 
+                port=int(os.getenv('PORT', '8080'))
+            )
+            await site.start()
+            if "logger" in globals():
+                logger.info(f"Health check server running on port {os.getenv('PORT', '8080')}")
+        except Exception as e:
+            if "logger" in globals():
+                logger.error(f"Failed to setup health check: {e}")
+            raise
+)
