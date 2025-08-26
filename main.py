@@ -195,9 +195,68 @@ Use the buttons below to get started!
             welcome_text,
             parse_mode='Markdown',
             reply_markup=reply_markup
-        )
-        
+        )        
         self.metrics.log_command(1.0)
+
+    async def show_health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show detailed health check"""
+        try:
+            # Get detailed system info
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            # Get process info
+            process = psutil.Process()
+            process_memory = process.memory_info()
+            
+            # Determine health status
+            health_status = "✅ HEALTHY"
+            if cpu_percent > 80 or memory.percent > 80 or disk.percent > 90:
+                health_status = "⚠️ WARNING"
+            if cpu_percent > 95 or memory.percent > 95 or disk.percent > 95:
+                health_status = "🚨 CRITICAL"
+            
+            health_text = f"""
+❤️ **System Health Check**
+
+🟢 **Overall Status**: {health_status}
+
+💻 **System Resources**
+• CPU Usage: `{cpu_percent:.1f}%`
+• Memory: `{memory.percent:.1f}%` ({memory.used // 1024**2} MB / {memory.total // 1024**2} MB)
+• Disk: `{disk.percent:.1f}%` ({disk.used // 1024**3} GB / {disk.total // 1024**3} GB)
+
+🤖 **Bot Process**
+• Memory Usage: `{process_memory.rss // 1024**2} MB`
+• Uptime: `{self.metrics.get_uptime()}`
+• Commands Handled: `{self.metrics.command_count}`
+
+🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="health_check"),
+                    InlineKeyboardButton("🔙 Back", callback_data="menu_monitoring")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.callback_query.edit_message_text(
+                health_text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+            
+        except Exception as e:
+            logger.error(f"Health check error: {e}")
+            await update.callback_query.edit_message_text(
+                "❌ Error getting health status",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="menu_monitoring")
+                ]])
+            )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
@@ -323,10 +382,54 @@ Contact the developer or check documentation.
                 module_name = callback_data.split("_")[1]
                 await self.show_module_menu(update, context, module_name)
             
-            # Coming soon responses for features
+            # Finance features
+            elif callback_data in ["add_expense", "add_income", "show_balance", "finance_report"]:
+                await query.edit_message_text(
+                    "💰 **Finance Feature**\n\nThis feature is coming soon! Stay tuned for updates.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Back", callback_data="menu_finance")
+                    ]])
+                )
+            
+            # Business features  
+            elif callback_data in ["n8n_clients", "docker_status", "vps_status", "system_metrics"]:
+                await query.edit_message_text(
+                    "⚙️ **Business Feature**\n\nThis feature is coming soon! Stay tuned for updates.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Back", callback_data="menu_business")
+                    ]])
+                )
+            
+            # Monitoring features
+            elif callback_data in ["view_alerts", "view_logs"]:
+                await query.edit_message_text(
+                    "📊 **Monitoring Feature**\n\nThis feature is coming soon! Stay tuned for updates.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Back", callback_data="menu_monitoring")
+                    ]])
+                )
+            
+            # Working health check feature
+            elif callback_data == "health_check":
+                await self.show_health_check(update, context)
+            
+            # AI features
+            elif callback_data in ["ask_ai", "clear_context", "voice_mode", "ai_settings"]:
+                await query.edit_message_text(
+                    "🤖 **AI Feature**\n\nThis feature is coming soon! Stay tuned for updates.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Back", callback_data="menu_ai")
+                    ]])
+                )
+            
+            # Unknown action
             else:
                 await query.edit_message_text(
-                    "🚧 **Feature Coming Soon**\n\nThis feature is currently under development. Stay tuned for updates!",
+                    f"⚠️ **Unknown Action**\n\nThe action '{callback_data}' is not implemented yet.",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
