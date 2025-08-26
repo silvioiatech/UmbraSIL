@@ -7,6 +7,7 @@ import asyncio
 import paramiko
 import base64
 import io
+import json
 from aiohttp import web
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
@@ -24,6 +25,17 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
+
+# AI API imports
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None
+
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
 
 # Bot Configuration
 BOT_VERSION = "1.0.0"
@@ -70,8 +82,205 @@ class BotMetrics:
             return 100.0
         return ((self.command_count - self.error_count) / self.command_count) * 100
 
+class AIAgent:
+    """Intelligent AI Agent using OpenAI/Claude APIs"""
+    
+    def __init__(self, vps_monitor):
+        self.vps_monitor = vps_monitor
+        
+        # Initialize AI clients
+        openai_key = os.getenv("OPENAI_API_KEY")
+        claude_key = os.getenv("CLAUDE_API_KEY")
+        
+        self.openai_client = AsyncOpenAI(api_key=openai_key) if openai_key and AsyncOpenAI else None
+        self.claude_client = anthropic.AsyncAnthropic(api_key=claude_key) if claude_key and anthropic else None
+        
+        # Conversation context per user
+        self.user_contexts = {}
+        
+        # System prompt for the AI agent
+        self.system_prompt = f"""
+You are UmbraSIL, an intelligent VPS management assistant. You can:
+
+1. **Have normal conversations** - Chat naturally about any topic
+2. **Manage VPS systems** - Execute commands, monitor health, manage services
+3. **Control Docker** - Manage containers and services
+4. **Handle files** - Browse, read, and manage filesystem
+5. **System monitoring** - Check health, processes, resources
+
+**IMPORTANT CAPABILITIES**:
+- You have access to a VPS at {self.vps_monitor.host or 'configured host'} via SSH
+- You can execute ANY shell command when requested
+- You can check system status, manage services, handle Docker containers
+- You understand both casual conversation AND technical requests
+
+**Response Guidelines**:
+- For casual conversation: Respond naturally and helpfully
+- For VPS requests: Indicate you'll execute the command and explain what you're doing
+- Be conversational but professional
+- If asked to do something technical, explain what you'll do first
+
+**Available Functions**:
+- execute_command(command) - Run shell commands on VPS
+- get_system_status() - Get CPU/memory/disk usage
+- get_docker_status() - List Docker containers
+- list_directory(path) - Browse filesystem
+
+Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+    
+    async def process_message(self, user_id: int, message: str) -> Dict[str, Any]:
+        """Process user message with AI and determine actions"""
+        try:
+            # Get or create user context
+            if user_id not in self.user_contexts:
+                self.user_contexts[user_id] = []
+            
+            # Add user message to context
+            self.user_contexts[user_id].append({
+                "role": "user",
+                "content": message
+            })
+            
+            # Keep context manageable (last 10 messages)
+            if len(self.user_contexts[user_id]) > 20:
+                self.user_contexts[user_id] = self.user_contexts[user_id][-20:]
+            
+            # Get AI response
+            ai_response = await self._get_ai_response(user_id)
+            
+            # Parse response for actions
+            actions = self._parse_ai_response(ai_response)
+            
+            # Add AI response to context
+            self.user_contexts[user_id].append({
+                "role": "assistant",
+                "content": ai_response
+            })
+            
+            return {
+                "response": ai_response,
+                "actions": actions,
+                "success": True
+            }
+            
+        except Exception as e:
+            logger.error(f"AI Agent error: {e}")
+            return {
+                "response": f"I apologize, I'm having trouble processing your request right now. Error: {str(e)}",
+                "actions": [],
+                "success": False
+            }
+    
+    async def _get_ai_response(self, user_id: int) -> str:
+        """Get response from AI API"""
+        messages = [
+            {"role": "system", "content": self.system_prompt}
+        ] + self.user_contexts[user_id]
+        
+        # Try OpenAI first
+        if self.openai_client:
+            try:
+                response = await self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=messages,
+                    max_tokens=1000,
+                    temperature=0.7
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.error(f"OpenAI error: {e}")
+        
+        # Fallback to Claude
+        if self.claude_client:
+            try:
+                # Convert messages for Claude format
+                claude_messages = []
+                for msg in self.user_contexts[user_id]:
+                    if msg["role"] != "system":
+                        claude_messages.append(msg)
+                
+                response = await self.claude_client.messages.create(
+                    model="claude-3-sonnet-20240229",
+                    max_tokens=1000,
+                    system=self.system_prompt,
+                    messages=claude_messages
+                )
+                return response.content[0].text
+            except Exception as e:
+                logger.error(f"Claude error: {e}")
+        
+        # Fallback to rule-based responses
+        return self._get_fallback_response(self.user_contexts[user_id][-1]["content"])
+    
+    def _parse_ai_response(self, response: str) -> List[Dict]:
+        """Parse AI response for actionable commands"""
+        actions = []
+        
+        # Look for command execution indicators
+        command_indicators = [
+            "I'll execute", "Let me run", "I'll check", "Running", "Executing",
+            "Let me get", "I'll show you", "Checking", "Getting"
+        ]
+        
+        response_lower = response.lower()
+        
+        # Check for system status request
+        if any(phrase in response_lower for phrase in ["system status", "server health", "check system"]):
+            actions.append({"type": "system_status"})
+        
+        # Check for docker requests
+        if any(phrase in response_lower for phrase in ["docker", "container"]):
+            actions.append({"type": "docker_status"})
+        
+        # Check for file operations
+        if any(phrase in response_lower for phrase in ["list files", "directory", "browse"]):
+            actions.append({"type": "file_list", "path": "~"})
+        
+        # Check for specific commands
+        command_patterns = {
+            "disk space": "df -h",
+            "memory usage": "free -h",
+            "processes": "ps aux --sort=-%cpu | head -15",
+            "uptime": "uptime",
+            "network": "ss -tuln | head -20"
+        }
+        
+        for pattern, command in command_patterns.items():
+            if pattern in response_lower:
+                actions.append({"type": "execute_command", "command": command})
+        
+        return actions
+    
+    def _get_fallback_response(self, message: str) -> str:
+        """Fallback response when AI APIs are not available"""
+        message_lower = message.lower()
+        
+        # Greeting responses
+        if any(word in message_lower for word in ["hello", "hi", "hey"]):
+            return "Hello! I'm UmbraSIL, your intelligent VPS assistant. I can help you manage your server and also chat about anything you'd like. What can I do for you today?"
+        
+        # VPS related responses
+        if any(word in message_lower for word in ["server", "vps", "system", "status"]):
+            return "I'd be happy to help with your VPS! I can check system status, execute commands, manage Docker containers, and more. What would you like me to do?"
+        
+        # Docker responses
+        if "docker" in message_lower or "container" in message_lower:
+            return "I can help you manage Docker containers! Let me check your container status for you."
+        
+        # Command responses
+        if any(word in message_lower for word in ["command", "execute", "run"]):
+            return "I can execute commands on your VPS! Just tell me what you'd like me to run, or ask me to check something specific like disk space or memory usage."
+        
+        # General conversation
+        return f"I understand you said: '{message}'. I'm your intelligent VPS assistant, but I can also chat about general topics! For VPS management, I can check system status, execute commands, manage Docker, and browse files. What would you like to do?"
+    
+    def clear_context(self, user_id: int):
+        """Clear conversation context for user"""
+        if user_id in self.user_contexts:
+            del self.user_contexts[user_id]
+
 class SimpleAuth:
-    """Simple authentication system"""
     
     def __init__(self):
         # Get allowed users from environment
@@ -282,13 +491,16 @@ class UmbraSILBot:
         self.auth = SimpleAuth()
         self.vps_monitor = VPSMonitor()
         
+        # Initialize AI Agent
+        self.ai_agent = AIAgent(self.vps_monitor)
+        
         # Create application
         self.application = Application.builder().token(self.token).build()
         
         # Setup handlers immediately
         self.setup_handlers()
         
-        logger.info("UmbraSIL Bot initialized successfully")
+        logger.info("UmbraSIL Bot with AI Agent initialized successfully")
     
     def setup_handlers(self):
         """Setup all bot handlers"""
@@ -511,11 +723,12 @@ Full access to your VPS management:
         )
 
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages - AI Agent is the primary interface"""
+        """Handle text messages - Real AI Agent processes everything"""
         if not update.message or not update.message.text:
             return
             
         user_text = update.message.text.strip()
+        user_id = update.effective_user.id
         
         # Check if we're expecting a command (VPS command execution)
         if context.user_data.get('expecting_command'):
@@ -523,8 +736,98 @@ Full access to your VPS management:
             await self.execute_vps_command(update, context, user_text)
             return
         
-        # Otherwise, let the AI Agent handle the message
-        await self.ai_agent_process(update, context, user_text)
+        # Process with Real AI Agent
+        await self.process_with_ai_agent(update, context, user_text, user_id)
+    
+    async def process_with_ai_agent(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str, user_id: int):
+        """Process message with real AI Agent (OpenAI/Claude)"""
+        try:
+            # Show typing indicator
+            thinking_msg = await update.message.reply_text(
+                "🤖 *Thinking...*",
+                parse_mode='Markdown'
+            )
+            
+            # Process with AI Agent
+            result = await self.ai_agent.process_message(user_id, user_message)
+            
+            if not result["success"]:
+                await thinking_msg.edit_text(
+                    f"🤖 **UmbraSIL AI**\n\n{result['response']}",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            ai_response = result["response"]
+            actions = result["actions"]
+            
+            # Execute any actions the AI determined
+            action_results = []
+            for action in actions:
+                try:
+                    if action["type"] == "system_status":
+                        vps_stats = await self.vps_monitor.get_system_stats()
+                        action_results.append(f"System Status: {'Healthy' if vps_stats and vps_stats.get('connected') else 'Disconnected'}")
+                    
+                    elif action["type"] == "docker_status":
+                        docker_result = await self.vps_monitor.get_docker_status()
+                        if docker_result["success"]:
+                            container_count = len([line for line in docker_result["output"].split('\n') if line.strip()]) - 1
+                            action_results.append(f"Docker: {container_count} containers found")
+                        else:
+                            action_results.append("Docker: Service unavailable")
+                    
+                    elif action["type"] == "execute_command":
+                        cmd_result = await self.vps_monitor.execute_command(action["command"])
+                        if cmd_result["success"]:
+                            output = cmd_result["output"][:500] + "..." if len(cmd_result["output"]) > 500 else cmd_result["output"]
+                            action_results.append(f"Command '{action['command']}' executed successfully")
+                        else:
+                            action_results.append(f"Command '{action['command']}' failed: {cmd_result['error'][:200]}")
+                    
+                    elif action["type"] == "file_list":
+                        file_result = await self.vps_monitor.get_directory_listing(action.get("path", "~"))
+                        if file_result["success"]:
+                            file_count = len([line for line in file_result["output"].split('\n') if line.strip()])
+                            action_results.append(f"Directory listing: {file_count} items found")
+                        else:
+                            action_results.append("Directory listing failed")
+                            
+                except Exception as e:
+                    logger.error(f"Action execution error: {e}")
+                    action_results.append(f"Action failed: {str(e)[:100]}")
+            
+            # Format the final response
+            final_response = f"🤖 **UmbraSIL AI**\n\n{ai_response}"
+            
+            # Add action results if any
+            if action_results:
+                final_response += "\n\n🔧 **Actions Completed:**\n" + "\n".join([f"• {result}" for result in action_results])
+            
+            # Add helpful buttons
+            keyboard = [
+                [
+                    InlineKeyboardButton("📊 System Status", callback_data="ai_system_status"),
+                    InlineKeyboardButton("🐳 Docker Status", callback_data="ai_docker_status")
+                ],
+                [
+                    InlineKeyboardButton("🔄 Clear Context", callback_data="ai_clear_context"),
+                    InlineKeyboardButton("🖥️ VPS Control", callback_data="vps_control")
+                ]
+            ]
+            
+            await thinking_msg.edit_text(
+                final_response,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"AI Agent processing error: {e}")
+            await update.message.reply_text(
+                f"🤖 **UmbraSIL AI**\n\n❌ I apologize, but I encountered an error processing your request: {str(e)[:200]}",
+                parse_mode='Markdown'
+            )
     
     async def ai_agent_process(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
         """AI Agent processes user input and delegates to appropriate modules"""
@@ -1515,6 +1818,26 @@ Contact the developer or check documentation.
                 await self.format_docker_response(thinking_msg, result)
             elif callback_data == "traditional_menu":
                 await self.show_traditional_menu(update, context)
+            elif callback_data == "ai_system_status":
+                # AI Agent system status
+                thinking_msg = await update.callback_query.message.reply_text(
+                    "🤖 **UmbraSIL AI**\n\nLet me check your VPS system status...",
+                    parse_mode='Markdown'
+                )
+                await self.show_ai_vps_status(thinking_msg)
+            elif callback_data == "ai_docker_status":
+                # AI Agent docker status
+                thinking_msg = await update.callback_query.message.reply_text(
+                    "🤖 **UmbraSIL AI**\n\nChecking your Docker containers...",
+                    parse_mode='Markdown'
+                )
+                result = await self.vps_monitor.get_docker_status()
+                await self.format_docker_response(thinking_msg, result)
+            elif callback_data == "ai_clear_context":
+                # Clear AI conversation context
+                user_id = update.effective_user.id
+                self.ai_agent.clear_context(user_id)
+                await update.callback_query.answer("🧠 Conversation context cleared!", show_alert=True)
             
             # Monitoring features
             elif callback_data in ["view_alerts", "view_logs"]:
