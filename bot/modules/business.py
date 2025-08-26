@@ -12,16 +12,26 @@ class BusinessManager:
 
     def get_menu(self):
         return {
-            "text": "⚙️ Business Menu",
+            "text": "⚙️ **Business Operations**\n\nManage your business workflows:",
             "keyboard": [
-                # Add your business menu buttons here
+                [
+                    {"text": "🏭 n8n Clients", "callback_data": "n8n_clients"},
+                    {"text": "🐳 Docker Status", "callback_data": "docker_status"}
+                ],
+                [
+                    {"text": "🖥️ VPS Status", "callback_data": "vps_status"},
+                    {"text": "📊 System Metrics", "callback_data": "system_metrics"}
+                ]
             ]
         }
 
     def get_analytics_menu(self):
         return {
-            "text": "📈 Analytics Menu",
+            "text": "📈 **Business Analytics**\n\nAnalyze your business performance:",
             "keyboard": [
-                # Add your analytics menu buttons here
+                [
+                    {"text": "📊 Performance", "callback_data": "business_performance"},
+                    {"text": "📈 Trends", "callback_data": "business_trends"}
+                ]
             ]
         }

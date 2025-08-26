@@ -12,8 +12,15 @@ class FinanceManager:
 
     def get_menu(self):
         return {
-            "text": "💰 Finance Menu",
+            "text": "💰 **Finance Management**\n\nTrack your financial activities:",
             "keyboard": [
-                # Add your finance menu buttons here
+                [
+                    {"text": "💸 Add Expense", "callback_data": "add_expense"},
+                    {"text": "💰 Add Income", "callback_data": "add_income"}
+                ],
+                [
+                    {"text": "📊 Balance", "callback_data": "show_balance"},
+                    {"text": "📈 Report", "callback_data": "finance_report"}
+                ]
             ]
         }

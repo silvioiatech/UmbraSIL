@@ -1,7 +1,8 @@
 import logging
 from datetime import datetime
 from functools import wraps
-from typing import Optional, Callable
+from typing import Optional, Callable, List
+import os
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ class DatabaseManager:
     """Database management class"""
     
     def __init__(self):
-        self.connected = False
+        self.connected = True
     
     async def initialize(self):
         """Initialize database connection"""
@@ -38,12 +39,13 @@ class SecurityManager:
     
     def __init__(self):
         self.authenticated = False
+        # Get allowed users from environment or use default
+        allowed_ids = os.getenv("ALLOWED_USER_IDS", "8286836821")
+        self.allowed_users = [int(x.strip()) for x in allowed_ids.split(",") if x.strip()]
     
     async def authenticate_user(self, user_id: int) -> bool:
         """Authenticate a user"""
-        # TODO: Implement proper authentication
-        self.authenticated = True
-        return True
+        return user_id in self.allowed_users
 
 def require_auth(func: Callable):
     """Decorator to require authentication for commands"""
@@ -58,6 +60,8 @@ def require_auth(func: Callable):
                 await update.message.reply_text(
                     "🚫 You are not authorized to use this command."
                 )
+            elif update.callback_query:
+                await update.callback_query.answer("🚫 Access denied", show_alert=True)
             return
         return await func(self, update, context, *args, **kwargs)
     return wrapper
