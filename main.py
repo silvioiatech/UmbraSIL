@@ -4,6 +4,9 @@ import logging
 import psutil
 import platform
 import asyncio
+import paramiko
+import base64
+import io
 from aiohttp import web
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
@@ -76,6 +79,194 @@ class SimpleAuth:
     async def authenticate_user(self, user_id: int) -> bool:
         return user_id in self.allowed_users
 
+class VPSMonitor:
+    """Monitor external VPS via SSH"""
+    
+    def __init__(self):
+        self.host = os.getenv("VPS_HOST")
+        self.port = int(os.getenv("VPS_PORT", "22"))
+        self.username = os.getenv("VPS_USERNAME")
+        self.private_key_b64 = os.getenv("VPS_PRIVATE_KEY")
+        self.ssh_client = None
+        
+    async def connect(self):
+        """Connect to VPS via SSH"""
+        try:
+            if not all([self.host, self.username, self.private_key_b64]):
+                logger.warning("VPS credentials not configured")
+                return False
+                
+            self.ssh_client = paramiko.SSHClient()
+            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            # Decode private key
+            private_key_data = base64.b64decode(self.private_key_b64)
+            private_key = paramiko.RSAKey.from_private_key_file(
+                io.StringIO(private_key_data.decode())
+            )
+            
+            self.ssh_client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                pkey=private_key,
+                timeout=10
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"VPS connection error: {e}")
+            return False
+    
+    async def get_system_stats(self):
+        """Get VPS system statistics"""
+        try:
+            if not self.ssh_client:
+                if not await self.connect():
+                    return None
+            
+            # Get CPU usage
+            stdin, stdout, stderr = self.ssh_client.exec_command(
+                "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
+            )
+            cpu_usage = float(stdout.read().decode().strip())
+            
+            # Get memory usage
+            stdin, stdout, stderr = self.ssh_client.exec_command(
+                "free | grep Mem | awk '{printf \"%.1f %.1f %.1f\", $3/$2 * 100.0, $3/1024/1024, $2/1024/1024}'"
+            )
+            memory_info = stdout.read().decode().strip().split()
+            memory_percent = float(memory_info[0])
+            memory_used_gb = float(memory_info[1])
+            memory_total_gb = float(memory_info[2])
+            
+            # Get disk usage
+            stdin, stdout, stderr = self.ssh_client.exec_command(
+                "df -h / | awk 'NR==2 {printf \"%s %s %s\", $3, $2, $5}'"
+            )
+            disk_info = stdout.read().decode().strip().split()
+            disk_used = disk_info[0]
+            disk_total = disk_info[1]
+            disk_percent = float(disk_info[2].replace('%', ''))
+            
+            # Get uptime
+            stdin, stdout, stderr = self.ssh_client.exec_command("uptime -p")
+            uptime = stdout.read().decode().strip()
+            
+            # Get load average
+            stdin, stdout, stderr = self.ssh_client.exec_command("uptime | awk -F'load average:' '{print $2}'")
+            load_avg = stdout.read().decode().strip()
+            
+            return {
+                "cpu_percent": cpu_usage,
+                "memory_percent": memory_percent,
+                "memory_used_gb": memory_used_gb,
+                "memory_total_gb": memory_total_gb,
+                "disk_used": disk_used,
+                "disk_total": disk_total,
+                "disk_percent": disk_percent,
+                "uptime": uptime,
+                "load_avg": load_avg,
+                "connected": True
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting VPS stats: {e}")
+            return {
+                "connected": False,
+                "error": str(e)
+            }
+    
+    async def execute_command(self, command: str, timeout: int = 30):
+        """Execute command on VPS and return output"""
+        try:
+            if not self.ssh_client:
+                if not await self.connect():
+                    return {"success": False, "error": "Connection failed"}
+            
+            stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=timeout)
+            
+            output = stdout.read().decode('utf-8', errors='ignore').strip()
+            error = stderr.read().decode('utf-8', errors='ignore').strip()
+            exit_code = stdout.channel.recv_exit_status()
+            
+            return {
+                "success": exit_code == 0,
+                "output": output,
+                "error": error,
+                "exit_code": exit_code
+            }
+            
+        except Exception as e:
+            logger.error(f"Command execution error: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def get_directory_listing(self, path: str = "~"):
+        """Get directory contents"""
+        command = f"ls -la '{path}'"
+        result = await self.execute_command(command)
+        return result
+    
+    async def get_file_content(self, filepath: str, max_lines: int = 50):
+        """Get file content (limited lines for Telegram)"""
+        command = f"head -n {max_lines} '{filepath}'"
+        result = await self.execute_command(command)
+        return result
+    
+    async def write_file(self, filepath: str, content: str):
+        """Write content to file"""
+        # Escape content for shell
+        escaped_content = content.replace("'", "'\"'\"'")
+        command = f"echo '{escaped_content}' > '{filepath}'"
+        result = await self.execute_command(command)
+        return result
+    
+    async def get_running_processes(self):
+        """Get running processes"""
+        command = "ps aux --sort=-%cpu | head -20"
+        result = await self.execute_command(command)
+        return result
+    
+    async def get_docker_status(self):
+        """Get Docker containers status"""
+        command = "docker ps -a"
+        result = await self.execute_command(command)
+        return result
+    
+    async def get_service_status(self, service_name: str):
+        """Get systemd service status"""
+        command = f"systemctl status {service_name}"
+        result = await self.execute_command(command)
+        return result
+    
+    async def restart_service(self, service_name: str):
+        """Restart systemd service"""
+        command = f"sudo systemctl restart {service_name}"
+        result = await self.execute_command(command)
+        return result
+    
+    async def get_logs(self, service_name: str = None, lines: int = 50):
+        """Get system or service logs"""
+        if service_name:
+            command = f"journalctl -u {service_name} -n {lines} --no-pager"
+        else:
+            command = f"journalctl -n {lines} --no-pager"
+        result = await self.execute_command(command)
+        return result
+    
+    async def get_network_info(self):
+        """Get network information"""
+        command = "ss -tuln | head -20; echo '---'; ip addr show | head -30"
+        result = await self.execute_command(command)
+        return result
+    
+    def disconnect(self):
+        """Disconnect from VPS"""
+        if self.ssh_client:
+            self.ssh_client.close()
+            self.ssh_client = None
+
 class UmbraSILBot:
     """Main bot class - simplified and working"""
     
@@ -87,6 +278,7 @@ class UmbraSILBot:
         # Initialize components
         self.metrics = BotMetrics()
         self.auth = SimpleAuth()
+        self.vps_monitor = VPSMonitor()
         
         # Create application
         self.application = Application.builder().token(self.token).build()
@@ -104,6 +296,12 @@ class UmbraSILBot:
         self.application.add_handler(CommandHandler("status", self.require_auth(self.status_command)))
         self.application.add_handler(CommandHandler("menu", self.require_auth(self.main_menu_command)))
         self.application.add_handler(CallbackQueryHandler(self.require_auth(self.button_handler)))
+        
+        # Message handler for command execution
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self.require_auth(self.handle_text_message)
+        ))
         
         # Error handler
         self.application.add_error_handler(self.handle_error)
@@ -199,38 +397,60 @@ Use the buttons below to get started!
         self.metrics.log_command(1.0)
 
     async def show_health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show detailed health check"""
+        """Show VPS health check"""
         try:
-            # Get detailed system info
-            cpu_percent = psutil.cpu_percent(interval=1)
-            memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
+            # Get VPS statistics
+            vps_stats = await self.vps_monitor.get_system_stats()
             
-            # Get process info
-            process = psutil.Process()
-            process_memory = process.memory_info()
-            
-            # Determine health status
-            health_status = "✅ HEALTHY"
-            if cpu_percent > 80 or memory.percent > 80 or disk.percent > 90:
-                health_status = "⚠️ WARNING"
-            if cpu_percent > 95 or memory.percent > 95 or disk.percent > 95:
-                health_status = "🚨 CRITICAL"
-            
-            health_text = f"""
-❤️ **System Health Check**
+            if not vps_stats or not vps_stats.get("connected"):
+                # Show connection error
+                error_msg = vps_stats.get("error", "Connection failed") if vps_stats else "VPS credentials not configured"
+                
+                health_text = f"""
+❤️ **VPS Health Check**
+
+🚨 **Connection Status**: FAILED
+
+⚠️ **Error**: {error_msg}
+
+🔧 **Troubleshooting**:
+• Check VPS credentials in Railway environment
+• Verify VPS_HOST, VPS_USERNAME, VPS_PRIVATE_KEY
+• Ensure VPS is accessible on port {self.vps_monitor.port}
+• Check SSH key permissions
+
+🔄 **Last Checked**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Determine health status
+                cpu_percent = vps_stats["cpu_percent"]
+                memory_percent = vps_stats["memory_percent"]
+                disk_percent = vps_stats["disk_percent"]
+                
+                health_status = "✅ HEALTHY"
+                if cpu_percent > 80 or memory_percent > 80 or disk_percent > 90:
+                    health_status = "⚠️ WARNING"
+                if cpu_percent > 95 or memory_percent > 95 or disk_percent > 95:
+                    health_status = "🚨 CRITICAL"
+                
+                health_text = f"""
+❤️ **VPS Health Check**
 
 🟢 **Overall Status**: {health_status}
+🔗 **Host**: `{self.vps_monitor.host}`
 
 💻 **System Resources**
 • CPU Usage: `{cpu_percent:.1f}%`
-• Memory: `{memory.percent:.1f}%` ({memory.used // 1024**2} MB / {memory.total // 1024**2} MB)
-• Disk: `{disk.percent:.1f}%` ({disk.used // 1024**3} GB / {disk.total // 1024**3} GB)
+• Memory: `{memory_percent:.1f}%` ({vps_stats['memory_used_gb']:.1f}GB / {vps_stats['memory_total_gb']:.1f}GB)
+• Disk: `{disk_percent:.1f}%` ({vps_stats['disk_used']} / {vps_stats['disk_total']})
 
-🤖 **Bot Process**
-• Memory Usage: `{process_memory.rss // 1024**2} MB`
-• Uptime: `{self.metrics.get_uptime()}`
-• Commands Handled: `{self.metrics.command_count}`
+⚙️ **System Info**
+• Uptime: `{vps_stats['uptime']}`
+• Load Average: `{vps_stats['load_avg']}`
+
+🤖 **Bot Stats**
+• Commands: `{self.metrics.command_count}`
+• Bot Uptime: `{self.metrics.get_uptime()}`
 
 🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
 """
@@ -252,11 +472,429 @@ Use the buttons below to get started!
         except Exception as e:
             logger.error(f"Health check error: {e}")
             await update.callback_query.edit_message_text(
-                "❌ Error getting health status",
+                f"❌ Error getting VPS health status: {str(e)}",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 Back", callback_data="menu_monitoring")
                 ]])
             )
+    
+    async def show_vps_control_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show VPS control main menu"""
+        control_text = """
+🖥️ **VPS Control Panel**
+
+Full access to your VPS management:
+"""
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("⚙️ Execute Command", callback_data="execute_command"),
+                InlineKeyboardButton("🔍 System Info", callback_data="system_info")
+            ],
+            [
+                InlineKeyboardButton("🌐 Network Info", callback_data="network_info"),
+                InlineKeyboardButton("🔄 Restart Services", callback_data="service_control")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back to Business", callback_data="menu_business")
+            ]
+        ]
+        
+        await update.callback_query.edit_message_text(
+            control_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages for command execution"""
+        if not update.message or not update.message.text:
+            return
+            
+        # Check if we're expecting a command
+        if context.user_data.get('expecting_command'):
+            command = update.message.text.strip()
+            
+            # Clear the flag
+            context.user_data['expecting_command'] = False
+            
+            # Execute the command
+            await self.execute_vps_command(update, context, command)
+        else:
+            # Regular text message - could be used for AI chat later
+            await update.message.reply_text(
+                "💡 Use /menu to access bot features or send commands via VPS Control Panel."
+            )
+    
+    async def execute_vps_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, command: str):
+        """Execute command on VPS and show result"""
+        try:
+            # Show "executing" message
+            status_msg = await update.message.reply_text(
+                f"⚙️ **Executing Command**\n\n`{command}`\n\n⏳ Please wait...",
+                parse_mode='Markdown'
+            )
+            
+            # Execute command
+            result = await self.vps_monitor.execute_command(command)
+            
+            if result["success"]:
+                # Format successful output
+                output = result["output"] if result["output"] else "(No output)"
+                
+                # Limit output length for Telegram
+                if len(output) > 3500:
+                    output = output[:3500] + "\n\n... (output truncated)"
+                
+                response_text = f"""
+⚙️ **Command Executed Successfully**
+
+📝 **Command**: `{command}`
+✅ **Exit Code**: {result['exit_code']}
+
+📋 **Output**:
+```
+{output}
+```
+
+🔄 **Executed**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Format error output
+                error = result["error"] if result["error"] else "Unknown error"
+                
+                if len(error) > 3500:
+                    error = error[:3500] + "\n\n... (error truncated)"
+                
+                response_text = f"""
+⚙️ **Command Failed**
+
+📝 **Command**: `{command}`
+❌ **Exit Code**: {result.get('exit_code', 'N/A')}
+
+🚫 **Error**:
+```
+{error}
+```
+
+🔄 **Executed**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("⚙️ Execute Another", callback_data="execute_command"),
+                    InlineKeyboardButton("🖥️ VPS Control", callback_data="vps_control")
+                ]
+            ]
+            
+            # Update the status message with results
+            await status_msg.edit_text(
+                response_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"Command execution error: {e}")
+            await update.message.reply_text(
+                f"❌ **Error executing command**\n\n{str(e)}",
+                parse_mode='Markdown'
+            )
+    
+    async def show_docker_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show Docker containers status"""
+        try:
+            result = await self.vps_monitor.get_docker_status()
+            
+            if not result["success"]:
+                status_text = f"""
+🐳 **Docker Status**
+
+❌ **Error**: {result['error']}
+
+🔧 **Possible Issues**:
+• Docker not installed
+• Docker service not running
+• Permission denied
+
+🔄 **Last Checked**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Format Docker output
+                output = result["output"][:3000]  # Limit for Telegram
+                status_text = f"""
+🐳 **Docker Containers**
+
+```
+{output}
+```
+
+🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="docker_management"),
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                status_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"Docker status error: {e}")
+            await update.callback_query.edit_message_text(
+                f"❌ Error getting Docker status: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]])
+            )
+    
+    async def show_vps_processes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show running processes"""
+        try:
+            result = await self.vps_monitor.get_running_processes()
+            
+            if not result["success"]:
+                process_text = f"""
+📊 **VPS Processes**
+
+❌ **Error**: {result['error']}
+
+🔄 **Last Checked**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Format process output
+                output = result["output"][:3000]  # Limit for Telegram
+                process_text = f"""
+📊 **Top Processes (by CPU)**
+
+```
+{output}
+```
+
+🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="vps_processes"),
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                process_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"Processes error: {e}")
+            await update.callback_query.edit_message_text(
+                f"❌ Error getting processes: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]])
+            )
+    
+    async def show_file_manager(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show file manager"""
+        try:
+            # Default to home directory
+            current_path = context.user_data.get('current_path', '~')
+            result = await self.vps_monitor.get_directory_listing(current_path)
+            
+            if not result["success"]:
+                file_text = f"""
+📁 **File Manager**
+
+❌ **Error**: {result['error']}
+
+📂 **Path**: `{current_path}`
+
+🔄 **Last Checked**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Format directory listing
+                output = result["output"][:3000]  # Limit for Telegram
+                file_text = f"""
+📁 **File Manager**
+
+📂 **Path**: `{current_path}`
+
+```
+{output}
+```
+
+🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="file_manager"),
+                    InlineKeyboardButton("📄 Read File", callback_data="read_file")
+                ],
+                [
+                    InlineKeyboardButton("✏️ Write File", callback_data="write_file"),
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                file_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"File manager error: {e}")
+            await update.callback_query.edit_message_text(
+                f"❌ Error accessing files: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]])
+            )
+    
+    async def show_system_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show system logs"""
+        try:
+            result = await self.vps_monitor.get_logs()
+            
+            if not result["success"]:
+                log_text = f"""
+📋 **System Logs**
+
+❌ **Error**: {result['error']}
+
+🔄 **Last Checked**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Format log output
+                output = result["output"][:3000]  # Limit for Telegram
+                log_text = f"""
+📋 **System Logs (Last 50)**
+
+```
+{output}
+```
+
+🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="system_logs"),
+                    InlineKeyboardButton("🔍 Service Logs", callback_data="service_logs")
+                ],
+                [
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                log_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"System logs error: {e}")
+            await update.callback_query.edit_message_text(
+                f"❌ Error getting logs: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]])
+            )
+    
+    async def show_network_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show network information"""
+        try:
+            result = await self.vps_monitor.get_network_info()
+            
+            if not result["success"]:
+                network_text = f"""
+🌐 **Network Information**
+
+❌ **Error**: {result['error']}
+
+🔄 **Last Checked**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            else:
+                # Format network output
+                output = result["output"][:3000]  # Limit for Telegram
+                network_text = f"""
+🌐 **Network Information**
+
+```
+{output}
+```
+
+🔄 **Last Updated**: {datetime.now().strftime('%H:%M:%S')}
+"""
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data="network_info"),
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                network_text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+        except Exception as e:
+            logger.error(f"Network info error: {e}")
+            await update.callback_query.edit_message_text(
+                f"❌ Error getting network info: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="vps_control")
+                ]])
+            )
+    
+    async def prompt_command_execution(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Prompt user to send a command"""
+        prompt_text = """
+⚙️ **Execute Command**
+
+⚠️ **DANGER ZONE**: You can execute ANY command on your VPS.
+
+📝 **Instructions**:
+1. Type your command in the next message
+2. Commands run as your VPS user
+3. Use `sudo` for admin commands
+4. Output limited to prevent spam
+
+💫 **Examples**:
+• `ls -la /var/www`
+• `sudo systemctl status nginx`
+• `df -h`
+• `top -bn1 | head -10`
+
+🚀 **Send your command now:**
+"""
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data="vps_control")
+            ]
+        ]
+        
+        # Set flag to expect command
+        context.user_data['expecting_command'] = True
+        
+        await update.callback_query.edit_message_text(
+            prompt_text,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
@@ -393,14 +1031,30 @@ Contact the developer or check documentation.
                 )
             
             # Business features  
-            elif callback_data in ["n8n_clients", "docker_status", "vps_status", "system_metrics"]:
+            elif callback_data in ["n8n_clients"]:
                 await query.edit_message_text(
-                    "⚙️ **Business Feature**\n\nThis feature is coming soon! Stay tuned for updates.",
+                    "⚙️ **n8n Client Management**\n\nThis feature is coming soon! Will manage your n8n workflow instances.",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("🔙 Back", callback_data="menu_business")
                     ]])
                 )
+            
+            # VPS Management Features
+            elif callback_data == "vps_control":
+                await self.show_vps_control_menu(update, context)
+            elif callback_data == "docker_management":
+                await self.show_docker_status(update, context)
+            elif callback_data == "vps_processes":
+                await self.show_vps_processes(update, context)
+            elif callback_data == "file_manager":
+                await self.show_file_manager(update, context)
+            elif callback_data == "system_logs":
+                await self.show_system_logs(update, context)
+            elif callback_data == "execute_command":
+                await self.prompt_command_execution(update, context)
+            elif callback_data == "network_info":
+                await self.show_network_info(update, context)
             
             # Monitoring features
             elif callback_data in ["view_alerts", "view_logs"]:
@@ -531,12 +1185,16 @@ Contact support or check documentation.
                 "text": "⚙️ **Business Operations**\n\nManage your business workflows:",
                 "keyboard": [
                     [
-                        InlineKeyboardButton("🏭 n8n Clients", callback_data="n8n_clients"),
-                        InlineKeyboardButton("🐳 Docker", callback_data="docker_status")
+                        InlineKeyboardButton("🖥️ VPS Control", callback_data="vps_control"),
+                        InlineKeyboardButton("🏭 n8n Clients", callback_data="n8n_clients")
                     ],
                     [
-                        InlineKeyboardButton("🖥️ VPS Status", callback_data="vps_status"),
-                        InlineKeyboardButton("📊 Metrics", callback_data="system_metrics")
+                        InlineKeyboardButton("🐳 Docker", callback_data="docker_management"),
+                        InlineKeyboardButton("📊 Processes", callback_data="vps_processes")
+                    ],
+                    [
+                        InlineKeyboardButton("📁 File Manager", callback_data="file_manager"),
+                        InlineKeyboardButton("📋 System Logs", callback_data="system_logs")
                     ]
                 ]
             },
