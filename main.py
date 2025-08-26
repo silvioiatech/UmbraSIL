@@ -741,7 +741,7 @@ All systems operational!
             raise
 
     async def run(self):
-    """Run the bot"""
+        """Run the bot"""
     try:
         logger.info("Starting bot...")
         
