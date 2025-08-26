@@ -848,108 +848,7 @@ A: Use /settings → Notifications to configure alerts.
             await update.effective_message.reply_text(
                 "❌ An unexpected error occurred. Our team has been notified."
             )
-    
-    async def setup(self):
-        """Setup bot handlers and modules"""
-        try:
-            # Core handlers
-            self.application.add_handler(CommandHandler("start", self.start))
-            self.application.add_handler(CommandHandler("help", self.help))
-            self.application.add_handler(CommandHandler("status", self.status_command))
-            self.application.add_handler(CommandHandler("menu", self.show_main_menu))
-            self.application.add_handler(CallbackQueryHandler(self.button_handler))
-            
-            # Error handler
-            self.application.add_error_handler(self.handle_error)
-            
-            # Setup module handlers
-            await asyncio.gather(
-                self.finance.setup_handlers(self.application),
-                self.business.setup_handlers(self.application),
-                self.monitoring.setup_handlers(self.application),
-                self.ai.setup_handlers(self.application)
-            )
-            
-            # Setup commands
-            await self.setup_commands()
-            
-            # Initialize database
-            await self.db.initialize()
-            
-            # Verify all connections
-            await self._verify_connections()
-            
-            logger.info("Bot setup completed successfully")
-        except Exception as e:
-            logger.error(f"Error during bot setup: {e}")
-            raise
-    
-    async def _verify_connections(self):
-        """Verify all external connections"""
-        try:
-            # Check database
-            if not await self.db.check_connection():
-                raise DatabaseError("Database connection failed")
-            
-            # Check AI services
-            if not await self.ai.check_services():
-                logger.warning("AI services partially unavailable")
-            
-            # Check monitoring
-            if not await self.monitoring.check_services():
-                logger.warning("Monitoring services partially unavailable")
-            
-            logger.info("All connections verified")
-        except Exception as e:
-            logger.error(f"Connection verification failed: {e}")
-            raise
-    
-    async def run(self):
-    """Run the bot"""
-    try:
-        logger.info("Starting bot...")
-        
-        # Setup health check first
-        await self.setup_healthcheck()
-        
-        # Setup bot
-        await self.setup()
-        
-        # Initialize application
-        await self.application.initialize()
-        
-        # Start application
-        await self.application.start()
-        
-        # Run polling
-        await self.application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        
-        logger.info("Bot is running")
-    except Exception as e:
-        logger.error(f"Critical error running bot: {e}")
-        self.metrics.log_error(str(e))
-        raise
-        
-        finally:
-            # Ensure clean shutdown
-            await self.application.stop()
 
-if __name__ == "__main__":
-    try:
-        # Set higher recursion limit for async operations
-        sys.setrecursionlimit(10000)
-        
-        # Create and run bot
-        bot = Bot()
-        asyncio.run(bot.run())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.critical(f"Fatal error: {e}")
-        sys.exit(1
     async def health_check(self, request):
         """Handle health check requests"""
         try:
@@ -1007,4 +906,106 @@ if __name__ == "__main__":
             if "logger" in globals():
                 logger.error(f"Failed to setup health check: {e}")
             raise
+    
+    async def setup(self):
+        """Setup bot handlers and modules"""
+        try:
+            # Core handlers
+            self.application.add_handler(CommandHandler("start", self.start))
+            self.application.add_handler(CommandHandler("help", self.help))
+            self.application.add_handler(CommandHandler("status", self.status_command))
+            self.application.add_handler(CommandHandler("menu", self.show_main_menu))
+            self.application.add_handler(CallbackQueryHandler(self.button_handler))
+            
+            # Error handler
+            self.application.add_error_handler(self.handle_error)
+            
+            # Setup module handlers
+            await asyncio.gather(
+                self.finance.setup_handlers(self.application),
+                self.business.setup_handlers(self.application),
+                self.monitoring.setup_handlers(self.application),
+                self.ai.setup_handlers(self.application)
+            )
+            
+            # Setup commands
+            await self.setup_commands()
+            
+            # Initialize database
+            await self.db.initialize()
+            
+            # Verify all connections
+            await self._verify_connections()
+            
+            logger.info("Bot setup completed successfully")
+        except Exception as e:
+            logger.error(f"Error during bot setup: {e}")
+            raise
+    
+    async def _verify_connections(self):
+        """Verify all external connections"""
+        try:
+            # Check database
+            if not await self.db.check_connection():
+                raise DatabaseError("Database connection failed")
+            
+            # Check AI services
+            if not await self.ai.check_services():
+                logger.warning("AI services partially unavailable")
+            
+            # Check monitoring
+            if not await self.monitoring.check_services():
+                logger.warning("Monitoring services partially unavailable")
+            
+            logger.info("All connections verified")
+        except Exception as e:
+            logger.error(f"Connection verification failed: {e}")
+            raise
+    
+    async def run(self):
+        """Run the bot"""
+        try:
+            logger.info("Starting bot...")
+        
+            # Setup health check first
+            await self.setup_healthcheck()
+        
+            # Setup bot
+            await self.setup()
+        
+            # Initialize application
+            await self.application.initialize()
+        
+            # Start application
+            await self.application.start()
+        
+            # Run polling
+            await self.application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+            )
+        
+            logger.info("Bot is running")
+        except Exception as e:
+            logger.error(f"Critical error running bot: {e}")
+            self.metrics.log_error(str(e))
+            raise
+        
+        finally:
+            # Ensure clean shutdown
+            await self.application.stop()
+
+if __name__ == "__main__":
+    try:
+        # Set higher recursion limit for async operations
+        sys.setrecursionlimit(10000)
+        
+        # Create and run bot
+        bot = Bot()
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}")
+        sys.exit(1
 )
