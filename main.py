@@ -41,6 +41,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Mock imports for modules that don't exist yet
+class MockModule:
+    def __init__(self, name):
+        self.name = name
+        
+    def is_operational(self):
+        return True
+        
+    async def setup_handlers(self, application):
+        pass
+        
+    def get_menu(self):
+        return {
+            "text": f"{self.name} Module Menu",
+            "keyboard": []
+        }
+
+class MockDatabaseManager:
+    async def initialize(self):
+        pass
+        
+    async def check_connection(self):
+        return True
+
+class MockSecurityManager:
+    async def authenticate_user(self, user_id):
+        allowed_users = [8286836821]  # Replace with your Telegram ID
+        return user_id in allowed_users
+
 class BotMetrics:
     """Track bot performance metrics"""
     
@@ -190,6 +219,7 @@ class Bot:
         self.auth = SimpleAuth()
         self.db = SimpleDatabase()
         
+<<<<<<< HEAD
         # Initialize modules
         self.finance = SimpleModule("Finance")
         self.business = SimpleModule("Business")
@@ -217,6 +247,26 @@ class Bot:
                 
             return await func(update, context)
         return wrapper
+=======
+        try:
+            # Initialize mock components (replace with real ones when available)
+            self.db = MockDatabaseManager()
+            self.security = MockSecurityManager()
+            
+            # Initialize mock modules
+            self.finance = MockModule("Finance")
+            self.business = MockModule("Business")
+            self.monitoring = MockModule("Monitoring")
+            self.ai = MockModule("AI")
+            
+            # Create application
+            self.application = Application.builder().token(self.token).build()
+            
+            logger.info("Bot initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize bot: {e}")
+            raise
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
 
     async def get_system_status(self) -> Dict[str, Any]:
         """Get system status"""
@@ -257,12 +307,76 @@ class Bot:
             logger.error(f"Error getting system status: {e}")
             return {"error": str(e)}
 
+<<<<<<< HEAD
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+=======
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command"""
+        if not update.message or not update.effective_user:
+            return
+            
+        start_time = datetime.now()
+        self.metrics.log_user_activity(update.effective_user.id)
+        
+        status = await self.get_system_status()
+        
+        status_text = f"""
+**System Status**
+
+**System Info**
+• Platform: `{status['system']['platform']}`
+• Python: `{status['system']['python']}`
+• Uptime: `{status['system']['uptime']}`
+• Time: `{status['system']['timestamp']}`
+
+**Resources**
+• CPU Usage: `{status['resources']['cpu']}`
+• Memory Usage: `{status['resources']['memory']}`
+• Disk Usage: `{status['resources']['disk']}`
+
+**Performance**
+• Avg Response: `{status['performance']['avg_response']}`
+• Success Rate: `{status['performance']['success_rate']}`
+• Commands: `{status['performance']['commands_handled']}`
+• Active Users: `{status['performance']['active_users_24h']}`
+
+**Modules**
+• Finance: {'✅' if status['modules']['finance'] else '❌'}
+• Business: {'✅' if status['modules']['business'] else '❌'}
+• Monitoring: {'✅' if status['modules']['monitoring'] else '❌'}
+• AI Assistant: {'✅' if status['modules']['ai'] else '❌'}
+
+**Database**
+• Status: {'✅ Connected' if status['database'] else '❌ Disconnected'}
+"""
+        if status.get('last_error'):
+            status_text += f"\n**Last Error**\n`{status['last_error']}`"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status"),
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            status_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        end_time = datetime.now()
+        self.metrics.log_command((end_time - start_time).total_seconds())
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
         """Handle /start command"""
         start_time = datetime.now()
         user = update.effective_user
         self.metrics.log_user_activity(user.id)
         
+<<<<<<< HEAD
         welcome_text = f"""
 🤖 **Welcome {user.first_name}!**
 
@@ -276,6 +390,27 @@ I'm your personal assistant bot with comprehensive business management capabilit
 📈 **Business Intelligence** - Analytics & reporting
 
 Use the buttons below to get started or type /help for more commands.
+=======
+        if not await self.security.authenticate_user(user_id):
+            await update.message.reply_text(
+                "🚫 Sorry, you are not authorized to use this bot."
+            )
+            return
+
+        welcome_msg = f"""
+**Welcome {first_name}!**
+
+I'm your personal assistant bot with advanced AI capabilities.
+
+**Core Features**:
+• Finance Management
+• Business Operations  
+• System Monitoring
+• AI Assistant
+• Business Intelligence
+
+Use /help for commands or /status for system health
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
 """
         keyboard = [
             [
@@ -285,10 +420,13 @@ Use the buttons below to get started or type /help for more commands.
             [
                 InlineKeyboardButton("💰 Finance", callback_data="menu_finance"),
                 InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
+<<<<<<< HEAD
             ],
             [
                 InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
                 InlineKeyboardButton("🤖 AI Assistant", callback_data="menu_ai")
+=======
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -299,19 +437,27 @@ Use the buttons below to get started or type /help for more commands.
             reply_markup=reply_markup
         )
         
+<<<<<<< HEAD
         self.metrics.log_command((datetime.now() - start_time).total_seconds())
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+=======
+        end_time = datetime.now()
+        self.metrics.log_command((end_time - start_time).total_seconds())
+    
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
         """Handle /help command"""
         help_text = """
-📚 **Command Reference**
+**Command Reference**
 
-🔧 **Core Commands**
+**Core Commands**
 /start - Initialize bot
 /help - Show this help
 /status - System status
 /menu - Main menu
 
+<<<<<<< HEAD
 💰 **Finance Commands** (Coming Soon)
 /expense - Add expense
 /income - Add income
@@ -337,6 +483,20 @@ Use the interactive menu for easier navigation!
             [
                 InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu"),
                 InlineKeyboardButton("📊 Status", callback_data="show_status")
+=======
+**Features**
+• Finance Management
+• Business Operations
+• System Monitoring
+• AI Assistant
+
+More features coming soon!
+"""
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_help"),
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -351,6 +511,7 @@ Use the interactive menu for easier navigation!
         """Handle /status command"""
         status = await self.get_system_status()
         
+<<<<<<< HEAD
         status_text = f"""
 📊 **System Status Report**
 
@@ -393,22 +554,66 @@ Use the interactive menu for easier navigation!
 
     async def main_menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /menu command"""
+=======
+        end_time = datetime.now()
+        self.metrics.log_command((end_time - start_time).total_seconds())
+
+    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle button callbacks"""
+        if not update.callback_query or not update.effective_user:
+            return
+            
+        start_time = datetime.now()
+        self.metrics.log_user_activity(update.effective_user.id)
+        
+        query = update.callback_query
+        await query.answer()
+        
+        try:
+            if query.data == "refresh_status":
+                await self.status_command(update, context)
+            elif query.data == "show_help":
+                await self.help(update, context)
+            elif query.data == "main_menu":
+                await self.show_main_menu(update, context)
+            
+            end_time = datetime.now()
+            self.metrics.log_command((end_time - start_time).total_seconds())
+            
+        except Exception as e:
+            logger.error(f"Error in button handler: {e}")
+            self.metrics.log_error(str(e))
+            await query.message.reply_text(
+                "⚠️ An error occurred processing your request. Please try again."
+            )
+    
+    async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show main menu"""
+        if not update.callback_query:
+            return
+            
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
         keyboard = [
             [
                 InlineKeyboardButton("💰 Finance", callback_data="menu_finance"),
                 InlineKeyboardButton("⚙️ Business", callback_data="menu_business")
             ],
             [
+<<<<<<< HEAD
                 InlineKeyboardButton("📊 Monitoring", callback_data="menu_monitoring"),
                 InlineKeyboardButton("🤖 AI Assistant", callback_data="menu_ai")
             ],
             [
                 InlineKeyboardButton("📊 Status", callback_data="show_status"),
+=======
+                InlineKeyboardButton("📊 Status", callback_data="refresh_status"),
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
                 InlineKeyboardButton("❓ Help", callback_data="show_help")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+<<<<<<< HEAD
         message_text = "🏠 **Main Menu**\nSelect a module or action:"
         
         if update.message:
@@ -485,8 +690,44 @@ Use the interactive menu for easier navigation!
                         InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")
                     ]])
                 )
+=======
+        await update.callback_query.edit_message_text(
+            "🏠 **Main Menu**\nSelect an option:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+    async def setup_commands(self):
+        """Setup bot commands for menu button"""
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Show help message"),
+            BotCommand("status", "Show system status"),
+            BotCommand("menu", "Show main menu")
+        ]
+        
+        await self.application.bot.set_my_commands(commands)
+        logger.info("Bot commands configured")
+
+    async def handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle errors in updates"""
+        try:
+            if update and update.effective_user:
+                user_id = update.effective_user.id
+                self.metrics.log_user_activity(user_id)
             
+            error = context.error
+            logger.error(f"Update {update} caused error: {error}")
+            self.metrics.log_error(str(error))
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
+            
+            if update and update.effective_message:
+                await update.effective_message.reply_text(
+                    "⚠️ An error occurred. Please try again."
+                )
+                
         except Exception as e:
+<<<<<<< HEAD
             logger.error(f"Button handler error: {e}")
             self.metrics.log_error(str(e))
             await query.edit_message_text(
@@ -613,6 +854,10 @@ All systems operational!
             except:
                 pass
 
+=======
+            logger.error(f"Error in error handler: {e}")
+
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
     async def health_check(self, request):
         """Health check endpoint"""
         try:
@@ -627,6 +872,14 @@ All systems operational!
                 }
             }
             
+<<<<<<< HEAD
+=======
+            is_healthy = all([
+                status_data["services"]["database"],
+                status_data["services"]["monitoring"]
+            ])
+            
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
             return web.Response(
                 text=json.dumps(status_data),
                 content_type='application/json',
@@ -661,6 +914,7 @@ All systems operational!
         except Exception as e:
             logger.error(f"Failed to setup health check: {e}")
             raise
+<<<<<<< HEAD
 
     async def setup_commands(self):
         """Setup bot commands for menu button"""
@@ -683,6 +937,17 @@ All systems operational!
             self.application.add_handler(CommandHandler("status", self.require_auth(self.status_command)))
             self.application.add_handler(CommandHandler("menu", self.require_auth(self.main_menu_command)))
             self.application.add_handler(CallbackQueryHandler(self.require_auth(self.button_handler)))
+=======
+    
+    async def setup(self):
+        """Setup bot handlers and modules"""
+        try:
+            # Core handlers
+            self.application.add_handler(CommandHandler("start", self.start))
+            self.application.add_handler(CommandHandler("help", self.help))
+            self.application.add_handler(CommandHandler("status", self.status_command))
+            self.application.add_handler(CallbackQueryHandler(self.button_handler))
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
             
             # Error handler
             self.application.add_error_handler(self.handle_error)
@@ -705,7 +970,11 @@ All systems operational!
         except Exception as e:
             logger.error(f"Error during bot setup: {e}")
             raise
+<<<<<<< HEAD
 
+=======
+    
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
     async def run(self):
         """Run the bot"""
         try:
@@ -723,14 +992,25 @@ All systems operational!
             # Start application
             await self.application.start()
             
+<<<<<<< HEAD
             # Run polling
             await self.application.run_polling(
+=======
+            # Start updater (this runs indefinitely)
+            await self.application.updater.start_polling(
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
             )
             
             logger.info("Bot is running")
             
+<<<<<<< HEAD
+=======
+            # Keep the bot running
+            await asyncio.Event().wait()
+            
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
         except Exception as e:
             logger.error(f"Critical error running bot: {e}")
             self.metrics.log_error(str(e))
@@ -738,6 +1018,10 @@ All systems operational!
         finally:
             # Ensure clean shutdown
             try:
+<<<<<<< HEAD
+=======
+                await self.application.updater.stop()
+>>>>>>> d1736fc03db2fa4b979ede13b27aa1a0b866ea25
                 await self.application.stop()
                 await self.application.shutdown()
             except Exception as e:
