@@ -100,33 +100,50 @@ class AIAgent:
         
         # System prompt for the AI agent
         self.system_prompt = f"""
-You are UmbraSIL, an intelligent VPS management assistant. You can:
+You are UmbraSIL, an intelligent VPS management assistant with REAL CAPABILITIES. You can:
 
-1. **Have normal conversations** - Chat naturally about any topic
-2. **Manage VPS systems** - Execute commands, monitor health, manage services
-3. **Control Docker** - Manage containers and services
-4. **Handle files** - Browse, read, and manage filesystem
-5. **System monitoring** - Check health, processes, resources
+1. **Have natural conversations** - Chat in any language (French, English, etc.)
+2. **Execute REAL VPS commands** - You have SSH access and can run actual shell commands
+3. **Manage services** - Start/stop/restart nginx, apache, docker containers
+4. **Monitor systems** - Check CPU, memory, disk, processes, logs
+5. **Manage files** - Read, write, browse filesystem
 
-**IMPORTANT CAPABILITIES**:
-- You have access to a VPS at {self.vps_monitor.host or 'configured host'} via SSH
-- You can execute ANY shell command when requested
-- You can check system status, manage services, handle Docker containers
-- You understand both casual conversation AND technical requests
+**CRITICAL: YOU HAVE REAL VPS ACCESS**
+- VPS Host: {self.vps_monitor.host or 'configured in environment'}
+- You can execute ANY shell command via execute_command()
+- You can get real system status via get_system_status()
+- You can manage Docker containers via get_docker_status()
+- You can browse files via list_directory()
 
-**Response Guidelines**:
-- For casual conversation: Respond naturally and helpfully
-- For VPS requests: Indicate you'll execute the command and explain what you're doing
-- Be conversational but professional
-- If asked to do something technical, explain what you'll do first
+**SAFETY PROTOCOLS:**
+- For SAFE commands (ls, ps, df, systemctl status, docker ps): Execute immediately
+- For DANGEROUS commands (rm, del, format, DROP, >, systemctl stop): Ask for confirmation first
+- For SYSTEM CHANGES (restart services, kill processes): Explain what you'll do, then execute
 
-**Available Functions**:
-- execute_command(command) - Run shell commands on VPS
-- get_system_status() - Get CPU/memory/disk usage
-- get_docker_status() - List Docker containers
-- list_directory(path) - Browse filesystem
+**Response Style:**
+- Respond in the same language the user uses
+- For technical requests: "I'll check/execute [command] for you..."
+- Always explain what you found after executing commands
+- Be conversational and helpful
+- When executing commands, mention the actions you're taking
+
+**Dangerous Commands (require confirmation):**
+- File deletion: rm, del, unlink
+- System shutdown: shutdown, reboot, halt
+- Service stopping: systemctl stop, docker stop
+- File overwriting: >, >>, tee with important files
+- Database operations: DROP, DELETE, TRUNCATE
+- User management: userdel, passwd
+
+**Safe Commands (execute immediately):**
+- System info: ps, top, htop, df, free, uptime, who
+- Service status: systemctl status, docker ps, docker logs
+- File browsing: ls, cat, head, tail, find
+- Network info: netstat, ss, ping
+- Service restart: systemctl restart (for web services)
 
 Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Remember: You have REAL VPS access - use it!
 """
     
     async def process_message(self, user_id: int, message: str) -> Dict[str, Any]:
@@ -216,39 +233,110 @@ Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _parse_ai_response(self, response: str) -> List[Dict]:
         """Parse AI response for actionable commands"""
         actions = []
-        
-        # Look for command execution indicators
-        command_indicators = [
-            "I'll execute", "Let me run", "I'll check", "Running", "Executing",
-            "Let me get", "I'll show you", "Checking", "Getting"
-        ]
-        
         response_lower = response.lower()
         
-        # Check for system status request
-        if any(phrase in response_lower for phrase in ["system status", "server health", "check system"]):
+        # Look for command execution indicators in multiple languages
+        execution_indicators = [
+            # English
+            "i'll execute", "let me run", "i'll check", "running", "executing",
+            "let me get", "i'll show you", "checking", "getting", "i'll restart",
+            "let me restart", "i'll look at", "let me see", "i'll examine",
+            # French
+            "je vais exécuter", "laisse-moi exécuter", "je vais vérifier", 
+            "j'exécute", "je vais redémarrer", "laisse-moi redémarrer",
+            "je vais regarder", "je vais examiner", "laisse-moi voir",
+            "je vais lancer", "je lance", "vérification"
+        ]
+        
+        # Check if AI indicates it will take action
+        will_execute = any(indicator in response_lower for indicator in execution_indicators)
+        
+        # System status requests (multiple languages)
+        if any(phrase in response_lower for phrase in [
+            "system status", "server health", "check system", "état du système", 
+            "santé du serveur", "vérifier le système", "statut système"
+        ]):
             actions.append({"type": "system_status"})
         
-        # Check for docker requests
-        if any(phrase in response_lower for phrase in ["docker", "container"]):
+        # Docker requests
+        if any(phrase in response_lower for phrase in [
+            "docker", "container", "conteneur"
+        ]):
             actions.append({"type": "docker_status"})
         
-        # Check for file operations
-        if any(phrase in response_lower for phrase in ["list files", "directory", "browse"]):
-            actions.append({"type": "file_list", "path": "~"})
+        # File operations
+        if any(phrase in response_lower for phrase in [
+            "list files", "directory", "browse", "fichiers", "répertoire", "dossier"
+        ]):
+            # Try to extract path from response
+            import re
+            path_match = re.search(r'(/[^\s]+)', response)
+            path = path_match.group(1) if path_match else "~"
+            actions.append({"type": "file_list", "path": path})
         
-        # Check for specific commands
+        # Specific command patterns (multilingual)
         command_patterns = {
+            # English patterns
             "disk space": "df -h",
-            "memory usage": "free -h",
+            "memory usage": "free -h", 
+            "ram usage": "free -h",
             "processes": "ps aux --sort=-%cpu | head -15",
+            "cpu usage": "top -bn1 | head -20",
             "uptime": "uptime",
-            "network": "ss -tuln | head -20"
+            "who is logged": "who",
+            "network": "ss -tuln | head -20",
+            "nginx status": "systemctl status nginx",
+            "apache status": "systemctl status apache2",
+            "restart nginx": "sudo systemctl restart nginx",
+            "restart apache": "sudo systemctl restart apache2",
+            # French patterns  
+            "espace disque": "df -h",
+            "utilisation mémoire": "free -h",
+            "utilisation ram": "free -h",
+            "processus": "ps aux --sort=-%cpu | head -15",
+            "utilisation cpu": "top -bn1 | head -20",
+            "temps de fonctionnement": "uptime",
+            "qui est connecté": "who",
+            "réseau": "ss -tuln | head -20",
+            "statut nginx": "systemctl status nginx",
+            "statut apache": "systemctl status apache2",
+            "redémarrer nginx": "sudo systemctl restart nginx",
+            "redémarrer apache": "sudo systemctl restart apache2",
         }
         
+        # Check for specific command patterns
         for pattern, command in command_patterns.items():
             if pattern in response_lower:
                 actions.append({"type": "execute_command", "command": command})
+        
+        # Look for direct shell commands in response
+        shell_commands = [
+            'ls', 'ps', 'df', 'free', 'top', 'htop', 'uptime', 'who', 'netstat', 'ss',
+            'systemctl', 'docker', 'cat', 'tail', 'head', 'grep', 'find'
+        ]
+        
+        # Extract commands from code blocks or backticks
+        import re
+        code_blocks = re.findall(r'`([^`]+)`', response)
+        for code in code_blocks:
+            first_word = code.strip().split()[0] if code.strip() else ''
+            if first_word in shell_commands:
+                # Check if it's a dangerous command
+                dangerous_patterns = ['rm ', 'del ', 'shutdown', 'reboot', 'halt', 'stop', 'kill']
+                is_dangerous = any(danger in code.lower() for danger in dangerous_patterns)
+                
+                actions.append({
+                    "type": "execute_command", 
+                    "command": code.strip(),
+                    "dangerous": is_dangerous
+                })
+        
+        # If AI indicates action but no specific command detected, check for general intent
+        if will_execute and not actions:
+            if any(word in response_lower for word in ['status', 'statut', 'health', 'santé']):
+                actions.append({"type": "system_status"})
+            elif any(word in response_lower for word in ['docker', 'container', 'conteneur']):
+                actions.append({"type": "docker_status"})
         
         return actions
     
@@ -767,35 +855,82 @@ Full access to your VPS management:
                 try:
                     if action["type"] == "system_status":
                         vps_stats = await self.vps_monitor.get_system_stats()
-                        action_results.append(f"System Status: {'Healthy' if vps_stats and vps_stats.get('connected') else 'Disconnected'}")
+                        if vps_stats and vps_stats.get('connected'):
+                            action_results.append(f"✅ Système: CPU {vps_stats['cpu_percent']:.1f}%, RAM {vps_stats['memory_percent']:.1f}%, Disque {vps_stats['disk_percent']:.1f}%")
+                        else:
+                            action_results.append("❌ VPS déconnecté ou non configuré")
                     
                     elif action["type"] == "docker_status":
                         docker_result = await self.vps_monitor.get_docker_status()
                         if docker_result["success"]:
-                            container_count = len([line for line in docker_result["output"].split('\n') if line.strip()]) - 1
-                            action_results.append(f"Docker: {container_count} containers found")
+                            container_lines = [line for line in docker_result["output"].split('\n') if line.strip()]
+                            container_count = max(0, len(container_lines) - 1)  # Subtract header
+                            action_results.append(f"🐳 Docker: {container_count} conteneurs trouvés")
                         else:
-                            action_results.append("Docker: Service unavailable")
+                            action_results.append("❌ Docker: Service indisponible")
                     
                     elif action["type"] == "execute_command":
-                        cmd_result = await self.vps_monitor.execute_command(action["command"])
-                        if cmd_result["success"]:
-                            output = cmd_result["output"][:500] + "..." if len(cmd_result["output"]) > 500 else cmd_result["output"]
-                            action_results.append(f"Command '{action['command']}' executed successfully")
+                        command = action["command"]
+                        is_dangerous = action.get("dangerous", False)
+                        
+                        if is_dangerous:
+                            # For dangerous commands, ask for confirmation
+                            confirmation_text = f"""
+🤖 **UmbraSIL AI - Confirmation Requise**
+
+⚠️ **Commande Potentiellement Dangereuse Détectée:**
+`{command}`
+
+🛡️ Cette commande pourrait:
+• Supprimer des fichiers
+• Arrêter des services
+• Modifier le système
+
+❓ **Voulez-vous vraiment l'exécuter?**
+"""
+                            
+                            keyboard = [
+                                [
+                                    InlineKeyboardButton("✅ Oui, Exécuter", callback_data=f"confirm_cmd_{len(context.user_data.get('pending_commands', []))}"),
+                                    InlineKeyboardButton("❌ Non, Annuler", callback_data="cancel_cmd")
+                                ]
+                            ]
+                            
+                            # Store the command for confirmation
+                            if 'pending_commands' not in context.user_data:
+                                context.user_data['pending_commands'] = []
+                            context.user_data['pending_commands'].append(command)
+                            
+                            await thinking_msg.edit_text(
+                                confirmation_text,
+                                parse_mode='Markdown',
+                                reply_markup=InlineKeyboardMarkup(keyboard)
+                            )
+                            return  # Stop processing here, wait for confirmation
                         else:
-                            action_results.append(f"Command '{action['command']}' failed: {cmd_result['error'][:200]}")
+                            # Safe command, execute immediately
+                            cmd_result = await self.vps_monitor.execute_command(command)
+                            if cmd_result["success"]:
+                                output_preview = cmd_result["output"][:300] + "..." if len(cmd_result["output"]) > 300 else cmd_result["output"]
+                                action_results.append(f"✅ `{command}` → Exécutée avec succès")
+                                if output_preview.strip():
+                                    action_results.append(f"📋 Résultat: ```\n{output_preview}```")
+                            else:
+                                error_preview = cmd_result["error"][:200] + "..." if len(cmd_result["error"]) > 200 else cmd_result["error"]
+                                action_results.append(f"❌ `{command}` → Échec: {error_preview}")
                     
                     elif action["type"] == "file_list":
                         file_result = await self.vps_monitor.get_directory_listing(action.get("path", "~"))
                         if file_result["success"]:
-                            file_count = len([line for line in file_result["output"].split('\n') if line.strip()])
-                            action_results.append(f"Directory listing: {file_count} items found")
+                            file_lines = [line for line in file_result["output"].split('\n') if line.strip()]
+                            file_count = len(file_lines)
+                            action_results.append(f"📁 Répertoire {action.get('path', '~')}: {file_count} éléments")
                         else:
-                            action_results.append("Directory listing failed")
+                            action_results.append(f"❌ Impossible d'accéder à {action.get('path', '~')}")
                             
                 except Exception as e:
                     logger.error(f"Action execution error: {e}")
-                    action_results.append(f"Action failed: {str(e)[:100]}")
+                    action_results.append(f"❌ Erreur: {str(e)[:100]}")
             
             # Format the final response
             final_response = f"🤖 **UmbraSIL AI**\n\n{ai_response}"
@@ -1838,6 +1973,79 @@ Contact the developer or check documentation.
                 user_id = update.effective_user.id
                 self.ai_agent.clear_context(user_id)
                 await update.callback_query.answer("🧠 Conversation context cleared!", show_alert=True)
+            elif callback_data.startswith("confirm_cmd_"):
+                # Execute confirmed dangerous command
+                try:
+                    cmd_index = int(callback_data.split("_")[-1])
+                    pending_commands = context.user_data.get('pending_commands', [])
+                    if cmd_index < len(pending_commands):
+                        command = pending_commands[cmd_index]
+                        
+                        # Update message to show execution
+                        await update.callback_query.edit_message_text(
+                            f"🤖 **UmbraSIL AI**\n\n⚙️ Exécution de la commande: `{command}`\n\n⏳ Veuillez patienter...",
+                            parse_mode='Markdown'
+                        )
+                        
+                        # Execute the command
+                        cmd_result = await self.vps_monitor.execute_command(command)
+                        
+                        if cmd_result["success"]:
+                            output_preview = cmd_result["output"][:1000] + "..." if len(cmd_result["output"]) > 1000 else cmd_result["output"]
+                            result_text = f"""
+🤖 **UmbraSIL AI - Commande Exécutée**
+
+✅ **Commande**: `{command}`
+
+📋 **Résultat**:
+```
+{output_preview}
+```
+
+✅ **Exécutée avec succès à** {datetime.now().strftime('%H:%M:%S')}
+"""
+                        else:
+                            error_preview = cmd_result["error"][:1000] + "..." if len(cmd_result["error"]) > 1000 else cmd_result["error"]
+                            result_text = f"""
+🤖 **UmbraSIL AI - Commande Échouée**
+
+❌ **Commande**: `{command}`
+
+🚫 **Erreur**:
+```
+{error_preview}
+```
+
+❌ **Échec à** {datetime.now().strftime('%H:%M:%S')}
+"""
+                        
+                        keyboard = [
+                            [
+                                InlineKeyboardButton("⚙️ Autre Commande", callback_data="execute_command"),
+                                InlineKeyboardButton("📊 Statut Système", callback_data="ai_system_status")
+                            ]
+                        ]
+                        
+                        await update.callback_query.edit_message_text(
+                            result_text,
+                            parse_mode='Markdown',
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                        
+                        # Clear the pending command
+                        context.user_data['pending_commands'].pop(cmd_index)
+                        
+                except Exception as e:
+                    logger.error(f"Confirmed command execution error: {e}")
+                    await update.callback_query.edit_message_text(
+                        f"🤖 **UmbraSIL AI**\n\n❌ Erreur lors de l'exécution: {str(e)}"
+                    )
+            elif callback_data == "cancel_cmd":
+                # Cancel dangerous command
+                await update.callback_query.edit_message_text(
+                    "🤖 **UmbraSIL AI**\n\n❌ **Commande annulée**\n\nLa commande potentiellement dangereuse a été annulée pour votre sécurité.\n\n💬 Comment puis-je vous aider autrement?",
+                    parse_mode='Markdown'
+                )
             
             # Monitoring features
             elif callback_data in ["view_alerts", "view_logs"]:
