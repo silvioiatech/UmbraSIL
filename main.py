@@ -786,16 +786,16 @@ def main():
         logger.critical(f"Fatal error: {e}")
         sys.exit(1)
 
+async def main():
+    try:
+        sys.setrecursionlimit(10000)
+        bot = Bot()
+        await bot.run()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}")
+        sys.exit(1)
+
 if __name__ == "__main__":
     asyncio.run(main())
-            # Create and run bot instance
-            bot = Bot()
-    
-            # Run the bot using asyncio
-            try:
-                asyncio.run(bot.run())
-            except KeyboardInterrupt:
-                logger.info("Bot stopped by user")
-            except Exception as e:
-                logger.critical(f"Fatal error: {e}")
-                sys.exit(1)
