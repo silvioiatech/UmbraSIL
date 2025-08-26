@@ -772,9 +772,9 @@ All systems operational!
                 
                 logger.info("Bot is running")
             
-        except Exception as e:
-            logger.error(f"Critical error running bot: {e}")
-            self.metrics.log_error(str(e))
+            except Exception as e:
+                logger.error(f"Critical error running bot: {e}")
+                self.metrics.log_error(str(e))
             raise
         finally:
             # Ensure clean shutdown
@@ -783,33 +783,33 @@ All systems operational!
                 await self.application.shutdown()
             except Exception as e:
                 logger.error(f"Error during shutdown: {e}")
-
-async def main():
-    """Main function to run the bot"""
-    try:
-        # Set higher recursion limit for async operations
-        sys.setrecursionlimit(10000)
         
-        # Create and run bot
-        bot = Bot()
-        await bot.run()
-        
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.critical(f"Fatal error: {e}")
-        sys.exit(1)
+        async def main():
+            """Main function to run the bot"""
+            try:
+            # Set higher recursion limit for async operations
+            sys.setrecursionlimit(10000)
+            
+            # Create and run bot
+            bot = Bot()
+            await bot.run()
 
-# At the bottom of main.py
-if __name__ == "__main__":
-    # Create and run bot instance
-    bot = Bot()
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+            except Exception as e:
+                logger.critical(f"Fatal error: {e}")
+                sys.exit(1)
+            
+            # At the bottom of main.py
+            if __name__ == "__main__":
+            # Create and run bot instance
+            bot = Bot()
     
-    # Run the bot using asyncio
-    try:
-        asyncio.run(bot.run())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.critical(f"Fatal error: {e}")
-        sys.exit(1)
+            # Run the bot using asyncio
+            try:
+                asyncio.run(bot.run())
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+            except Exception as e:
+                logger.critical(f"Fatal error: {e}")
+                sys.exit(1)
