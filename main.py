@@ -6,19 +6,6 @@ import psutil
 import platform
 from aiohttp import web
 import json
-
-    """Setup health check server"""
-    app = web.Application()
-    app.router.add_get('/', self.health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(
-        runner, 
-        host='0.0.0.0', 
-        port=int(os.getenv('PORT', '8080'))
-    )
-    await site.start()
-    logger.info(f"Health check server running on port {os.getenv('PORT', '8080')}")
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 from decimal import Decimal
@@ -668,6 +655,65 @@ A: Use /settings → Notifications to configure alerts.
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+    async def health_check(self, request):
+        """Handle health check requests"""
+        try:
+            status_data = {
+                "status": "healthy",
+                "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                "version": "1.0.0",
+                "uptime": str(self.metrics.get_uptime()),
+                "services": {
+                    "database": await self.db.check_connection(),
+                    "finance": self.finance.is_operational(),
+                    "business": self.business.is_operational(),
+                    "monitoring": self.monitoring.is_operational(),
+                    "ai": self.ai.is_operational()
+                }
+            }
+            
+            # Consider healthy only if critical services are up
+            is_healthy = all([
+                status_data["services"]["database"],
+                status_data["services"]["monitoring"]
+            ])
+            
+            return web.Response(
+                text=json.dumps(status_data),
+                content_type='application/json',
+                status=200 if is_healthy else 503
+            )
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return web.Response(
+                text=json.dumps({
+                    "status": "unhealthy",
+                    "error": str(e),
+                    "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                }),
+                content_type='application/json',
+                status=503
+            )
+
+    async def setup_healthcheck(self):
+        """Setup health check server"""
+        try:
+            app = web.Application()
+            app.router.add_get('/', self.health_check)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(
+                runner, 
+                host='0.0.0.0', 
+                port=int(os.getenv('PORT', '8080'))
+            )
+            await site.start()
+            logger.info(f"Health check server running on port {os.getenv('PORT', '8080')}")
+        except Exception as e:
+            logger.error(f"Failed to setup health check: {e}")
+            raise
+
+
 
     async def setup_commands(self):
         """Setup bot commands for menu button"""
