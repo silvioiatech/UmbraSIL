@@ -3,6 +3,8 @@ import sys
 import logging
 import psutil
 import platform
+import asyncio
+from aiohttp import web
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
@@ -497,20 +499,70 @@ Contact support or check documentation.
             except:
                 pass
 
+# Simple health check server
+async def health_check(request):
+    """Simple health check endpoint for Railway"""
+    return web.Response(text='{"status":"healthy","service":"umbrasil-bot"}', 
+                       content_type='application/json', 
+                       status=200)
+
+async def setup_health_server():
+    """Setup health check server"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.getenv('PORT', '8080'))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    logger.info(f"Health check server running on port {port}")
+    return runner
+
 def main():
     """Main function to run the bot"""
+    async def run_bot_with_health():
+        """Run both health server and bot together"""
+        try:
+            # Start health check server first
+            health_runner = await setup_health_server()
+            
+            # Create and run bot
+            logger.info("🚀 Starting UmbraSIL Bot...")
+            bot = UmbraSILBot()
+            
+            # Use the built-in run_polling which handles event loops properly
+            await bot.application.initialize()
+            await bot.application.start()
+            await bot.application.updater.start_polling()
+            
+            logger.info("✅ Bot is running successfully!")
+            
+            # Keep running until interrupted
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                logger.info("Bot stop requested")
+            
+        except Exception as e:
+            logger.critical(f"Fatal error: {e}")
+            raise
+        finally:
+            # Cleanup
+            try:
+                await bot.application.updater.stop()
+                await bot.application.stop()
+                await bot.application.shutdown()
+                await health_runner.cleanup()
+                logger.info("Cleanup completed")
+            except Exception as e:
+                logger.error(f"Cleanup error: {e}")
+    
     try:
-        logger.info("🚀 Starting UmbraSIL Bot...")
-        
-        # Create and run bot
-        bot = UmbraSILBot()
-        
-        # Use the built-in run_polling which handles event loops properly
-        bot.application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        
+        asyncio.run(run_bot_with_health())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
