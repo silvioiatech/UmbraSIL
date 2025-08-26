@@ -741,27 +741,34 @@ All systems operational!
             raise
 
     async def run(self):
-        """Run the bot"""
+    """Run the bot"""
+    try:
+        logger.info("Starting bot...")
+        
+        # Setup health check first
+        await self.setup_healthcheck()
+        
+        # Setup bot
+        await self.setup()
+        
+        # Run polling - this handles initialization and startup
+        await self.application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        
+        logger.info("Bot is running")
+        
+    except Exception as e:
+        logger.error(f"Critical error running bot: {e}")
+        self.metrics.log_error(str(e))
+        raise
+    finally:
+        # Ensure clean shutdown
         try:
-            logger.info("Starting bot...")
-            
-            # Setup health check first
-            await self.setup_healthcheck()
-            
-            # Setup bot
-            await self.setup()
-            
-            # Initialize application
-            await self.application.initialize()
-            
-            # Start application
-            await self.application.start()
-            
-            # Run polling
-            await self.application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
+            await self.application.stop()
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
             
             logger.info("Bot is running")
             
