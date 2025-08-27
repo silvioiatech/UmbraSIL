@@ -4,8 +4,22 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from telegram import Update, Message
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
-from openai import AsyncOpenAI
-import anthropic
+
+# Optional AI imports
+try:
+    from openai import AsyncOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    AsyncOpenAI = None
+    OPENAI_AVAILABLE = False
+
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    anthropic = None
+    ANTHROPIC_AVAILABLE = False
+
 from ...core import DatabaseManager, require_auth
 from .config import AIConfig
 
@@ -17,7 +31,17 @@ class AIManager:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.config = AIConfig
-        self.openai_client = AsyncOpenAI(api_key=self.config.OPENAI_API_KEY)
+        
+        # Initialize AI clients only if available
+        if OPENAI_AVAILABLE and self.config.OPENAI_API_KEY:
+            self.openai_client = AsyncOpenAI(api_key=self.config.OPENAI_API_KEY)
+        else:
+            self.openai_client = None
+            
+        if ANTHROPIC_AVAILABLE and self.config.CLAUDE_API_KEY:
+            self.anthropic_client = anthropic.Anthropic(api_key=self.config.CLAUDE_API_KEY)
+        else:
+            self.anthropic_client = None
         self.claude_client = anthropic.AsyncAnthropic(api_key=self.config.CLAUDE_API_KEY)
         self.context_store: Dict[int, List[Dict]] = {}
         self.last_interaction: Dict[int, datetime] = {}
