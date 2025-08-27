@@ -32,6 +32,15 @@ from telegram.ext import (
     ContextTypes
 )
 
+# Import NLP Manager
+try:
+    from nlp_manager import NLPManager
+    NLP_AVAILABLE = True
+except ImportError:
+    NLPManager = None
+    NLP_AVAILABLE = False
+    logging.warning("NLP Manager not available - Natural language understanding limited")
+
 # Optional imports with graceful fallbacks
 try:
     import paramiko
@@ -367,6 +376,15 @@ class UmbraSILBot:
         self.metrics = BotMetrics()
         self.auth = SimpleAuth()
         
+        # Initialize NLP Manager for natural language understanding
+        self.nlp_manager = None
+        if NLP_AVAILABLE:
+            self.nlp_manager = NLPManager()
+            if self.nlp_manager.is_operational():
+                logger.info("✅ NLP Manager initialized with OpenRouter")
+            else:
+                logger.info("⚠️ NLP Manager initialized but no API key set")
+        
         # Initialize module managers
         self.ai_manager = AIManager()
         self.finance_manager = FinanceManager()
@@ -423,6 +441,14 @@ class UmbraSILBot:
             MessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self.require_auth(self.handle_text_message)
+            )
+        )
+        
+        # Photo handler for receipts
+        self.application.add_handler(
+            MessageHandler(
+                filters.PHOTO,
+                self.require_auth(self.handle_photo_message)
             )
         )
         
@@ -805,12 +831,89 @@ Choose an action:
             await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
     
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages"""
+        """Handle text messages with NLP understanding"""
         if not update.message or not update.message.text:
             return
         
         user_text = update.message.text.strip()
         user_text_lower = user_text.lower()
+        
+        # Try NLP processing first if available and finance is enabled
+        if self.nlp_manager and self.nlp_manager.is_operational() and ENABLE_FINANCE:
+            # Get user context
+            user_context = {
+                "currency": self.finance_manager.currency,
+                "user_id": update.effective_user.id
+            }
+            
+            # Process message with NLP
+            nlp_result = await self.nlp_manager.process_message(user_text, user_context)
+            
+            # Handle based on intent
+            if nlp_result.get('confidence', 0) > 0.7:
+                intent = nlp_result.get('intent')
+                entities = nlp_result.get('entities', {})
+                
+                if intent == 'expense' and entities.get('amount'):
+                    # Add expense automatically
+                    amount = entities['amount']
+                    category = entities.get('category', 'other')
+                    vendor = entities.get('vendor', '')
+                    description = entities.get('description', f'{vendor} purchase' if vendor else 'Expense')
+                    
+                    success = await self.finance_manager.add_expense(amount, category, description)
+                    if success:
+                        response_text = f"💸 **Expense Added Automatically**\n\n"
+                        response_text += f"• Amount: {amount:.2f} {self.finance_manager.currency}\n"
+                        response_text += f"• Category: {category}\n"
+                        if vendor:
+                            response_text += f"• Vendor: {vendor}\n"
+                        response_text += f"• Description: {description}\n\n"
+                        response_text += f"💳 New balance: {self.finance_manager.balance:.2f} {self.finance_manager.currency}"
+                        
+                        await update.message.reply_text(response_text, parse_mode='Markdown')
+                        self.metrics.log_command(1.0, "finance")
+                        return
+                    else:
+                        await update.message.reply_text("❌ Failed to add expense. Please try again.")
+                        return
+                
+                elif intent == 'income' and entities.get('amount'):
+                    # Add income automatically
+                    amount = entities['amount']
+                    source = entities.get('source', 'income')
+                    description = entities.get('description', f'Income from {source}')
+                    
+                    success = await self.finance_manager.add_income(amount, source, description)
+                    if success:
+                        response_text = f"💰 **Income Added Automatically**\n\n"
+                        response_text += f"• Amount: {amount:.2f} {self.finance_manager.currency}\n"
+                        response_text += f"• Source: {source}\n"
+                        response_text += f"• Description: {description}\n\n"
+                        response_text += f"💳 New balance: {self.finance_manager.balance:.2f} {self.finance_manager.currency}"
+                        
+                        await update.message.reply_text(response_text, parse_mode='Markdown')
+                        self.metrics.log_command(1.0, "finance")
+                        return
+                    else:
+                        await update.message.reply_text("❌ Failed to add income. Please try again.")
+                        return
+                
+                elif intent == 'balance':
+                    # Show balance
+                    await self.show_finance_menu(update, context)
+                    return
+                
+                elif intent == 'report':
+                    # Generate report
+                    balance_info = await self.finance_manager.get_balance()
+                    report_text = f"📈 **Quick Financial Report**\n\n"
+                    report_text += f"💳 Balance: {balance_info['balance']:.2f} {balance_info['currency']}\n"
+                    report_text += f"📅 Today: +{balance_info['today_income']:.2f} / -{balance_info['today_expenses']:.2f}\n"
+                    report_text += f"📦 Total transactions: {balance_info['total_transactions']}"
+                    
+                    await update.message.reply_text(report_text, parse_mode='Markdown')
+                    return
         
         # Check for AI question (starts with "ai:" or contains AI keywords)
         if (ENABLE_AI and self.ai_manager.is_operational() and 
@@ -1189,6 +1292,30 @@ Choose an action:
                 "❌ An error occurred. Please try again.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="main_menu")]])
             )
+    
+    async def handle_photo_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle photo messages (receipts)"""
+        if not update.message or not update.message.photo:
+            return
+        
+        # Notify user that receipt processing is in progress
+        processing_msg = await update.message.reply_text(
+            "📸 **Receipt detected!**\n\nProcessing your receipt...",
+            parse_mode='Markdown'
+        )
+        
+        # For now, provide instructions since OCR requires additional setup
+        await processing_msg.edit_text(
+            "📸 **Receipt Processing**\n\n"
+            "Receipt OCR is not yet configured. To add this expense manually, please type:\n\n"
+            "`spent [amount] at [store]`\n\n"
+            "Example: `spent 47.30 at migros`\n\n"
+            "💡 **Tip:** With NLP enabled, I can understand natural language like:\n"
+            "• \"spent 25 at coop\"\n"
+            "• \"paid 15.50 for lunch\"\n"
+            "• \"bought groceries for 80\"",
+            parse_mode='Markdown'
+        )
     
     async def handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors"""
