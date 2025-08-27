@@ -10,12 +10,18 @@ import logging
 import psutil
 import platform
 import asyncio
-import paramiko
 import base64
 import io
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
+
+# Optional VPS management import
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
+    logging.warning("Paramiko not available - VPS management disabled")
 from telegram import (
     Update, 
     InlineKeyboardButton, 
