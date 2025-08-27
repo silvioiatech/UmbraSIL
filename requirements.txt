@@ -3,25 +3,55 @@ python-telegram-bot>=20.7
 python-dotenv>=1.0.0
 psutil>=5.9.5
 
-# Database (recommended for user management and command logging)
-# asyncpg>=0.29.0
-
-# Optional Dependencies - Uncomment as needed for additional features
+# Database (for user management and data persistence)
+asyncpg>=0.29.0
 
 # AI Integration (for AI assistant module)
-# openai>=1.3.7
-# anthropic>=0.8.0
+openai>=1.3.7
+anthropic>=0.8.0
 
 # VPS Management (for remote server administration)
-# paramiko>=3.3.1
+paramiko>=3.3.1
 
 # Advanced Scheduling (for automated tasks and notifications)
-# APScheduler>=3.10.4
-
-# Web Interface (if enabling web dashboard)
-# fastapi>=0.104.1
-# uvicorn[standard]>=0.24.0
+APScheduler>=3.10.4
 
 # Additional Utilities (for enhanced functionality)
-# requests>=2.31.0
-# python-dateutil>=2.8.2
+requests>=2.31.0
+python-dateutil>=2.8.2
+
+# Finance module dependencies
+google-cloud-vision>=3.4.4
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Business module dependencies
+docker>=6.1.3
+pynginx>=1.0.0
+
+# Monitoring and logging
+prometheus-client>=0.18.0
+structlog>=23.1.0
+
+# Image processing for receipt scanning
+Pillow>=10.0.0
+
+# HTTP client for API integrations
+aiohttp>=3.8.5
+
+# Timezone handling
+pytz>=2023.3
+
+# Web Interface (for health checks and monitoring)
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+
+# Audio processing for voice features
+speech-recognition>=3.10.0
+pydub>=0.25.1
+
+# Encryption for secure data storage
+cryptography>=41.0.4
+
+# JSON Web Tokens for authentication
+PyJWT>=2.8.0
