@@ -10,6 +10,6 @@ try:
 except ImportError:
     DatabaseManager = None
     DATABASE_AVAILABLE = False
-    logger.warning("Database functionality not available - install asyncpg for full features")
+    # Silent fallback - database is optional
 
 __all__ = ['SystemConfig', 'DatabaseManager', 'logger', 'setup_logging', 'require_auth', 'DATABASE_AVAILABLE']
